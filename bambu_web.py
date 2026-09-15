@@ -20,6 +20,8 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
+from bambu_discovery import resolve
+
 STATUS_KEYS = (
     "nozzle_temper", "nozzle_target_temper",
     "bed_temper", "bed_target_temper",
@@ -173,13 +175,22 @@ def main():
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Bambu A1 网页控制台")
-    ap.add_argument("--ip", required=True, help="打印机局域网 IP")
-    ap.add_argument("--serial", required=True, help="打印机序列号")
+    ap.add_argument("--ip", help="打印机局域网 IP(留空则 SSDP 自动发现)")
+    ap.add_argument("--serial", help="打印机序列号(留空则 SSDP 自动发现)")
     ap.add_argument("--code", required=True, help="LAN-only 模式访问码")
     ap.add_argument("--port", type=int, default=8347, help="网页端口(默认 8347)")
     ap.add_argument("--host", default="127.0.0.1",
                     help="监听地址;设为 0.0.0.0 可让同网段其他设备访问")
     args = ap.parse_args()
+
+    found = resolve(args.ip, args.serial)
+    if not found:
+        print("没找到打印机:确认打印机开机且和电脑同网段;"
+              "或去打印机屏幕 设置→网络 查 IP,用 --ip 传入(会自动记住)", file=sys.stderr)
+        sys.exit(1)
+    args.ip, args.serial = found["ip"], found["serial"]
+    print(f"打印机: {found.get('name', '?')} ({found.get('model', '?')}) "
+          f"@ {args.ip}  SN {args.serial}")
 
     link = BambuLink(args.ip, args.serial, args.code)
     try:

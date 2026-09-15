@@ -26,6 +26,8 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from bambu_discovery import resolve
+
 seq = 0
 last_status = {}  # 最近一次 report 里关心的字段缓存
 
@@ -122,11 +124,24 @@ HELP = """命令:
 
 
 def main():
+    # Windows 控制台默认 cp1252/GBK,中文输出会炸;强制 UTF-8
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Bambu A1 逐行 G-code 控制台")
-    ap.add_argument("--ip", required=True, help="打印机局域网 IP")
-    ap.add_argument("--serial", required=True, help="打印机序列号,如 039xxxxxxxxxxxx")
+    ap.add_argument("--ip", help="打印机局域网 IP(留空则 SSDP 自动发现)")
+    ap.add_argument("--serial", help="打印机序列号(留空则 SSDP 自动发现)")
     ap.add_argument("--code", required=True, help="LAN-only 模式访问码")
     args = ap.parse_args()
+
+    found = resolve(args.ip, args.serial)
+    if not found:
+        print("没找到打印机:确认打印机开机且和电脑同网段;"
+              "或去打印机屏幕 设置→网络 查 IP,用 --ip 传入(会自动记住)")
+        sys.exit(1)
+    args.ip, args.serial = found["ip"], found["serial"]
+    print(f"打印机: {found.get('name', '?')} ({found.get('model', '?')}) "
+          f"@ {args.ip}  SN {args.serial}")
 
     client = make_client(args)
     try:

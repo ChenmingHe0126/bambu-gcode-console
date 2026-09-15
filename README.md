@@ -30,10 +30,12 @@ Bambu A1 没有 USB Type-B 串口,不能像 Marlin 打印机那样用 Pronterfac
 pip install "paho-mqtt>=2.0"
 ```
 
+两个入口都支持**自动发现**:`--ip`/`--serial` 可以不填,程序按「显式参数(先探测可达)→ 上次成功的缓存地址(`~/.bambu-gcode-console.json`)→ SSDP 广播监听」的顺序自己找打印机。首次使用或换网络时建议手动传一次 `--ip`,之后就会记住。注意:校园/企业 WiFi 常过滤广播,Windows 在 Public 网络下也拦入站 UDP——SSDP 收不到时去打印机屏幕 设置→网络 查 IP 即可;Bambu Studio/OrcaSlicer 开着会占用发现端口。
+
 **方式一:命令行控制台**(最像 Pronterface 的串口终端)
 
 ```bash
-python bambu_console.py --ip 192.168.1.50 --serial 039XXXXXXXXXXXX --code 12345678
+python bambu_console.py --code 12345678
 ```
 
 进入 `gcode>` 提示符后逐行输入即可。内置命令:`status`(看温度/状态)、`help`、`exit`。
@@ -41,7 +43,7 @@ python bambu_console.py --ip 192.168.1.50 --serial 039XXXXXXXXXXXX --code 123456
 **方式二:网页控制台**(课堂投影推荐,带 Jog 按钮)
 
 ```bash
-python bambu_web.py --ip 192.168.1.50 --serial 039XXXXXXXXXXXX --code 12345678
+python bambu_web.py --code 12345678
 ```
 
 然后浏览器打开 <http://127.0.0.1:8347>:
