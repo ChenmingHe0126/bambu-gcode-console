@@ -55,12 +55,13 @@ python bambu_web.py --code 12345678
 - **Jog 面板**:X/Y/Z 方向键 + 归零,步进 0.1/1/10/50 mm 可选
 - **温度卡片**:喷嘴/热床实时温度 + 一键预设(150/200/220 等)
 - **G-code 控制台**:逐行输入,每条显示 `ok`/`FAILED` 回执,↑↓ 翻历史
-- **Send to SD**(默认:文件一拖进来就自动发送):把文件**原封不动**通过 FTPS 传进打印机 SD 卡根目录,不做任何包装或改写 —— 然后在打印机屏幕上选中它开始打印。Bambu Studio 导出的 `.gcode.3mf` 直接拖进来即可(已用 7.8 MB 的导出文件验证字节级一致);裸 `.gcode` 也照传。SD 文件列表支持刷新/删除
+- **Print now(一键打印)**:拖入 .gcode → 自动注入 Bambu Studio 真品骨架 `a1_skeleton.gcode.3mf`(Studio CLI 切的 10 mm 立方体,保留其 HEADER/CONFIG 注释块,EXECUTABLE 块整个换成你的 gcode,重算 md5)→ FTPS 上传 → MQTT `project_file` 启动。拖入 Studio 导出的 `.gcode.3mf` 则原样上传后启动。已在 A1 固件 01.08.01.00 上实测 IDLE → PREPARE → RUNNING
+- **Send to SD**(默认拖入即自动发送):把文件**原封不动**传进 SD 卡根目录,然后在打印机屏幕上选中它开始打印。裸 `.gcode` 屏幕能启动、但远程 `project_file` 启动不了(固件只执行 Studio 结构的 3mf,`gcode_file` 命令直接返回 fail)——所以远程要用 Print now
 - **G-code 文件预览**:拖入文本 .gcode 时,浏览器内渲染 XY 刀路(挤出/空移分色、层滑块、支持 G2/G3 圆弧)
 - **Stream**:逐行代发(Printrun 式),可暂停/停止,进度条 + 预览图上高亮已执行部分;适合几百行的课堂演示文件
 - 状态栏实时显示打印机状态和 WiFi 信号
 
-> 注:远程一键启动 SD 打印(MQTT `project_file`)在 2026 年的 A1 固件上会被"受理但不执行",目前以打印机屏幕启动为准;Print 按钮保留作实验用途。手写的裸 gcode 打印机屏幕未必能直接启动——课堂上想让机器跑手写 G-code 用 Stream,想正式打印用 Studio 切片导出的 `.gcode.3mf`。
+> 踩坑记录:手工拼的最小 3mf(哪怕带全套元数据)固件会"受理但不执行"或在屏幕上卡 preparing;打印机屏幕启动裸 gcode 时会在 `/cache` 写一个 `.bbl` JSON 任务描述,但复刻它的字段也没用——只有 Studio 真品骨架能过。另外打印机若处于卡死的 "device is busy" 状态,所有启动命令都会被静默丢弃,重启打印机即可。
 
 加 `--host 0.0.0.0` 可以让同一局域网里的学生用手机/平板访问(注意:谁都能控制,下课记得关)。
 

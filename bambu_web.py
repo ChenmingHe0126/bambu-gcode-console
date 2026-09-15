@@ -16,6 +16,7 @@ bambu_web.py — Bambu Lab A1 网页控制台(本机 HTTP → 打印机 MQTT 桥
 import argparse
 import base64
 import ftplib
+import hashlib
 import io
 import json
 import re
@@ -24,6 +25,7 @@ import sys
 import threading
 import time
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -122,6 +124,38 @@ def safe_sd_name(filename):
     """保留原文件名(含扩展名),只清洗掉路径分隔符和奇怪字符。"""
     name = re.sub(r"[^A-Za-z0-9_.\-]+", "_", Path(filename).name).strip("._") or "file.gcode"
     return name[:100]
+
+
+SKELETON_3MF = Path(__file__).resolve().parent / "a1_skeleton.gcode.3mf"
+
+
+def wrap_gcode_in_skeleton(gcode_text):
+    """把裸 gcode 注入 Bambu Studio 真品 .gcode.3mf 骨架("dummy 3mf" 法)。
+
+    固件的 project_file 只执行 Studio 结构的 3mf——手工拼的骨架会卡在
+    "准备中",所以骨架用 Studio CLI 切出来的真文件(10 mm 立方体)。保留它
+    的 HEADER/CONFIG 注释块,EXECUTABLE 块整个换成用户 gcode,重算 md5。
+    用户 gcode 若本身已带 HEADER_BLOCK(Studio 导出的),则原样使用。
+    """
+    skel = zipfile.ZipFile(SKELETON_3MF)
+    if "HEADER_BLOCK_START" in gcode_text:
+        new_gcode = gcode_text
+    else:
+        g = skel.read("Metadata/plate_1.gcode").decode("utf-8")
+        cut = g.index("\n", g.index("; EXECUTABLE_BLOCK_START")) + 1
+        new_gcode = g[:cut] + gcode_text.rstrip("\r\n") + "\n; EXECUTABLE_BLOCK_END\n"
+    nb = new_gcode.encode("utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for info in skel.infolist():
+            n = info.filename
+            if n == "Metadata/plate_1.gcode":
+                z.writestr(n, nb)
+            elif n == "Metadata/plate_1.gcode.md5":
+                z.writestr(n, hashlib.md5(nb).hexdigest().upper())
+            else:
+                z.writestr(n, skel.read(n))
+    return buf.getvalue()
 
 
 class BambuLink:
@@ -224,8 +258,8 @@ class BambuLink:
         return self.send_command(
             {"command": "gcode_line", "param": gcode.rstrip("\n") + "\n"}, timeout)
 
-    def start_sd_print(self, name):
-        """启动 SD 卡上的 .3mf(param 指向包内的 gcode)。"""
+    def start_sd_print(self, name, md5=""):
+        """启动 SD 卡上的 .3mf(param 指向包内的 gcode)。只认 Studio 结构的 3mf。"""
         subtask = name
         for ext in (".3mf", ".gcode"):
             if subtask.lower().endswith(ext):
@@ -235,7 +269,7 @@ class BambuLink:
             "param": "Metadata/plate_1.gcode",
             "url": f"file:///sdcard/{name}",
             "file": name,
-            "md5": "",
+            "md5": md5,
             "subtask_name": subtask,
             "subtask_id": "0",
             "project_id": "0",
@@ -516,6 +550,42 @@ def make_handler(app: App, html_path: Path):
                     self._json({"ok": True, "name": name})
                 except Exception as e:
                     self._json({"ok": False, "error": f"FTP upload failed: {e}"})
+            elif self.path == "/api/print_file":
+                # 一键打印:裸 gcode 注入真品骨架 / .3mf 原样 → 上传 → project_file 启动
+                try:
+                    data = self._body()
+                    filename = str(data.get("filename", "file.gcode"))
+                    raw = base64.b64decode(str(data.get("data", "")).split(",", 1)[-1])
+                except (ValueError, json.JSONDecodeError, base64.binascii.Error):
+                    self._json({"error": "bad request"}, 400)
+                    return
+                link = app.link
+                if not (link and link.connected):
+                    self._json({"ok": False, "error": "printer not connected"})
+                    return
+                if not raw:
+                    self._json({"ok": False, "error": "file is empty"})
+                    return
+                name = safe_sd_name(filename)
+                if name.lower().endswith(".3mf"):
+                    payload = raw
+                else:
+                    try:
+                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8", "replace"))
+                    except Exception as e:
+                        self._json({"ok": False, "error": f"could not wrap gcode: {e}"})
+                        return
+                    name = re.sub(r"\.(gcode|gco|g|nc|txt)$", "", name, flags=re.I) + ".gcode.3mf"
+                cfg = load_cache()
+                try:
+                    sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name, payload)
+                except Exception as e:
+                    self._json({"ok": False, "error": f"FTP upload failed: {e}"})
+                    return
+                r = link.start_sd_print(name, hashlib.md5(payload).hexdigest().upper())
+                ok = r["result"] == "success"
+                self._json({"ok": ok, "name": name,
+                            "error": "" if ok else f"{r['result']} {r.get('reason', '')}".strip()})
             elif self.path == "/api/sd/print":
                 try:
                     name = str(self._body().get("name", "")).strip()

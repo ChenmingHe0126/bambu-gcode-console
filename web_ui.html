@@ -290,9 +290,10 @@
         <span class="lbl" id="job-label"></span>
       </div>
     </div>
-    <div class="sec-label">Send to SD card (unmodified — start it on the printer screen)</div>
+    <div class="sec-label">Print now, or just send to the SD card</div>
     <div class="ctl-row">
-      <button class="primary" id="sd-upload" onclick="uploadToSd()">⬆ Send to SD</button>
+      <button class="primary" id="print-now" onclick="printNow()">▶ Print now</button>
+      <button id="sd-upload" onclick="uploadToSd()">⬆ Send to SD</button>
       <label class="lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
         <input type="checkbox" id="auto-sd" checked> send automatically when a file is loaded
       </label>
@@ -445,7 +446,7 @@
         $('file-info').hidden = true;
         addLog('· Loaded ' + f.name + ' (binary — no preview, send-to-SD only)', 'sys');
         if ($('auto-sd').checked && isConnected) uploadToSd();
-        else $('sd-msg').textContent = f.name + ' ready — press Send to SD';
+        else $('sd-msg').textContent = f.name + ' ready — Print now, or Send to SD';
       }
     };
     r.readAsArrayBuffer(f);
@@ -587,6 +588,22 @@
   }
   async function stopJob() { await post('/api/job/stop'); }
 
+  async function printNow() {
+    if (!fileB64 || sdBusy) return;
+    if (!confirm('Start printing ' + fileName + ' on the printer now?')) return;
+    sdBusy = true;
+    $('sd-msg').textContent = 'Preparing and sending ' + fileName + '…';
+    const r = await post('/api/print_file', { filename: fileName, data: fileB64 });
+    sdBusy = false;
+    if (r.ok) {
+      $('sd-msg').textContent = 'Print started: ' + r.name;
+      addLog('>> print started: ' + r.name, 'tx');
+      refreshSd(r.name);
+    } else {
+      $('sd-msg').textContent = r.error || 'print failed';
+      addLog('<< print: ' + (r.error || 'failed'), 'err');
+    }
+  }
   async function uploadToSd() {
     if (!fileB64 || sdBusy) return;
     sdBusy = true;
@@ -613,7 +630,7 @@
     if (!sel.options.length) {
       const o = document.createElement('option');
       o.value = '';
-      o.textContent = r.ok ? '— no .3mf on SD —' : (r.error || 'FTP failed');
+      o.textContent = r.ok ? '— no files on SD —' : (r.error || 'FTP failed');
       sel.appendChild(o);
     }
     if (selectName) sel.value = selectName;
@@ -621,6 +638,11 @@
   async function printFromSd() {
     const name = $('sd-select').value;
     if (!name) return;
+    if (!/\.3mf$/i.test(name)) {
+      $('sd-status').textContent = 'Raw .gcode cannot be started remotely (firmware limitation) — ' +
+        'drop the file above and use Print now, or start it on the printer screen.';
+      return;
+    }
     $('sd-status').textContent = 'Starting ' + name + '…';
     const r = await post('/api/sd/print', { name });
     $('sd-status').textContent = r.ok ? 'Print started: ' + name : (r.error || 'failed');
