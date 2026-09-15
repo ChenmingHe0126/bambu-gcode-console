@@ -56,7 +56,7 @@ python bambu_web.py --code 12345678
 - **温度卡片**:喷嘴/热床实时温度 + 一键预设(150/200/220 等)
 - **G-code 控制台**:逐行输入,每条显示 `ok`/`FAILED` 回执,↑↓ 翻历史
 - **Print now(一键打印)**:拖入 .gcode → 自动注入 Bambu Studio 真品骨架 `a1_skeleton.gcode.3mf`(Studio CLI 切的 10 mm 立方体,保留其 HEADER/CONFIG 注释块,EXECUTABLE 块整个换成你的 gcode,重算 md5)→ FTPS 上传 → MQTT `project_file` 启动。拖入 Studio 导出的 `.gcode.3mf` 则原样上传后启动。已在 A1 固件 01.08.01.00 上实测 IDLE → PREPARE → RUNNING
-- **Send to SD**(默认拖入即自动发送):把文件**原封不动**传进 SD 卡根目录,然后在打印机屏幕上选中它开始打印。裸 `.gcode` 屏幕能启动、但远程 `project_file` 启动不了(固件只执行 Studio 结构的 3mf,`gcode_file` 命令直接返回 fail)——所以远程要用 Print now
+- **Send to SD**(默认拖入即自动发送):把文件**原封不动**传进 SD 卡根目录。之后在 SD 文件列表里选中它点 **Print**:是 `.3mf` 直接启动;是裸 `.gcode` 则服务器自动取回、注入骨架、以 `<名字>.gcode.3mf` 传回并启动(裸 gcode 屏幕能点、远程 `project_file` 启动不了,固件只执行 Studio 结构的 3mf,`gcode_file` 命令直接返回 fail)。也可以在打印机屏幕上手动启动
 - **G-code 文件预览**:拖入文本 .gcode 时,浏览器内渲染 XY 刀路(挤出/空移分色、层滑块、支持 G2/G3 圆弧)
 - **Stream**:逐行代发(Printrun 式),可暂停/停止,进度条 + 预览图上高亮已执行部分;适合几百行的课堂演示文件
 - 状态栏实时显示打印机状态和 WiFi 信号

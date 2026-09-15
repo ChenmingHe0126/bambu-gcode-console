@@ -611,7 +611,7 @@
     const r = await post('/api/sd/upload', { filename: fileName, data: fileB64 });
     sdBusy = false;
     if (r.ok) {
-      $('sd-msg').textContent = 'On SD as ' + r.name + ' — start it on the printer screen';
+      $('sd-msg').textContent = 'On SD as ' + r.name + ' — press Print below, or start it on the printer screen';
       addLog('· Sent to SD: ' + r.name, 'sys');
       refreshSd(r.name);
     } else {
@@ -638,16 +638,15 @@
   async function printFromSd() {
     const name = $('sd-select').value;
     if (!name) return;
-    if (!/\.3mf$/i.test(name)) {
-      $('sd-status').textContent = 'Raw .gcode cannot be started remotely (firmware limitation) — ' +
-        'drop the file above and use Print now, or start it on the printer screen.';
-      return;
-    }
-    $('sd-status').textContent = 'Starting ' + name + '…';
+    if (!confirm('Start printing ' + name + ' now?')) return;
+    const isRaw = !/\.3mf$/i.test(name);
+    $('sd-status').textContent = (isRaw ? 'Converting ' + name + ' to 3mf and starting…'
+                                        : 'Starting ' + name + '…');
     const r = await post('/api/sd/print', { name });
-    $('sd-status').textContent = r.ok ? 'Print started: ' + name : (r.error || 'failed');
-    addLog(r.ok ? '>> SD print started: ' + name : '<< sd print: ' + (r.error || 'failed'),
+    $('sd-status').textContent = r.ok ? 'Print started: ' + r.name : (r.error || 'failed');
+    addLog(r.ok ? '>> print started: ' + r.name : '<< print: ' + (r.error || 'failed'),
            r.ok ? 'tx' : 'err');
+    if (r.ok) refreshSd(r.name);
   }
   async function deleteFromSd() {
     const name = $('sd-select').value;

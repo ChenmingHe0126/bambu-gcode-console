@@ -107,6 +107,23 @@ def sd_delete(ip, code, name):
             ftps.close()
 
 
+def sd_download(ip, code, name):
+    ftps = _ftps_session(ip, code, timeout=30)
+    buf = io.BytesIO()
+    try:
+        ftps.retrbinary(f"RETR {name}", buf.write)
+    finally:
+        try:
+            ftps.quit()
+        except Exception:
+            ftps.close()
+    return buf.getvalue()
+
+
+def wrapped_3mf_name(name):
+    return re.sub(r"\.(gcode|gco|g|nc|txt)$", "", name, flags=re.I) + ".gcode.3mf"
+
+
 def sd_list(ip, code):
     ftps = _ftps_session(ip, code)
     try:
@@ -575,7 +592,7 @@ def make_handler(app: App, html_path: Path):
                     except Exception as e:
                         self._json({"ok": False, "error": f"could not wrap gcode: {e}"})
                         return
-                    name = re.sub(r"\.(gcode|gco|g|nc|txt)$", "", name, flags=re.I) + ".gcode.3mf"
+                    name = wrapped_3mf_name(name)
                 cfg = load_cache()
                 try:
                     sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name, payload)
@@ -596,12 +613,25 @@ def make_handler(app: App, html_path: Path):
                 if not (link and link.connected):
                     self._json({"ok": False, "error": "printer not connected"})
                     return
-                if not name.lower().endswith(".3mf"):
-                    self._json({"ok": False, "error": "not a .3mf file"})
+                if "/" in name or "\\" in name:
+                    self._json({"ok": False, "error": "bad file name"})
                     return
-                r = link.start_sd_print(name)
+                cfg = load_cache()
+                md5 = ""
+                if not name.lower().endswith(".3mf"):
+                    # 裸 gcode 固件远程启动不了:取回 → 注入真品骨架 → 以 .gcode.3mf 传回 → 启动
+                    try:
+                        raw = sd_download(cfg.get("ip", ""), cfg.get("code", ""), name)
+                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8", "replace"))
+                        name = wrapped_3mf_name(name)
+                        sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name, payload)
+                        md5 = hashlib.md5(payload).hexdigest().upper()
+                    except Exception as e:
+                        self._json({"ok": False, "error": f"could not convert to 3mf: {e}"})
+                        return
+                r = link.start_sd_print(name, md5)
                 ok = r["result"] == "success"
-                self._json({"ok": ok,
+                self._json({"ok": ok, "name": name,
                             "error": "" if ok else f"{r['result']} {r.get('reason', '')}".strip()})
             elif self.path == "/api/sd/delete":
                 try:
