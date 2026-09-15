@@ -121,6 +121,43 @@
   }
   #send-btn:hover { background: var(--accent-press); }
 
+  /* ── File & preview ── */
+  #drop-zone {
+    border: 1.5px dashed var(--line); border-radius: 12px; padding: 22px;
+    text-align: center; color: var(--muted); font-size: 14px; cursor: pointer; transition: .15s;
+  }
+  #drop-zone:hover, #drop-zone.drag {
+    border-color: var(--accent); color: var(--text); background: var(--accent-soft);
+  }
+  #preview {
+    width: 100%; max-width: 480px; display: block; margin: 14px auto 6px;
+    background: #0a0e12; border: 1px solid var(--line); border-radius: 12px;
+  }
+  .file-meta { font-size: 14px; margin-top: 12px; }
+  .file-meta b { font-weight: 650; }
+  .file-meta .muted { color: var(--muted); font-size: 13px; margin-left: 8px; }
+  .warn { color: var(--amber); font-size: 12.5px; margin-top: 4px; }
+  .layer-row { display: flex; align-items: center; gap: 10px; margin: 2px auto 4px; max-width: 480px; }
+  .layer-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .sec-label {
+    font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); margin: 16px 0 8px;
+  }
+  .ctl-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ctl-row button { padding: 9px 16px; border-radius: 10px; font-weight: 600; font-size: 14px; }
+  .ctl-row .primary { background: var(--accent); border-color: var(--accent); color: #04140a; }
+  .ctl-row .primary:hover { background: var(--accent-press); }
+  .ctl-row .danger { color: var(--red); }
+  .progress {
+    flex: 1; min-width: 110px; height: 8px; background: var(--card-2);
+    border: 1px solid var(--line); border-radius: 999px; overflow: hidden;
+  }
+  #job-bar { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  select {
+    font: inherit; color: var(--text); background: var(--card-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; max-width: 260px;
+  }
+
   /* ── 连接面板 ── */
   #overlay {
     position: fixed; inset: 0; z-index: 10;
@@ -228,6 +265,52 @@
     </div>
   </div>
 
+  <div class="col">
+  <div class="card">
+    <h2>G-code File</h2>
+    <div id="drop-zone">Drop a .gcode file here, or click to browse</div>
+    <input type="file" id="file-input" accept=".gcode,.gco,.g,.nc,.txt" hidden>
+    <div id="file-info" hidden>
+      <div class="file-meta"><b id="file-name"></b><span class="muted" id="file-stats"></span></div>
+      <div class="warn" id="file-warn" hidden>
+        Large file — line-by-line streaming is meant for short demos; prefer Upload to SD.
+      </div>
+      <canvas id="preview" width="560" height="560"></canvas>
+      <div class="layer-row">
+        <span class="lbl">Layer</span>
+        <input type="range" id="layer-slider" min="0" max="0" value="0" oninput="layerChanged()">
+        <span class="lbl" id="layer-label">all</span>
+      </div>
+      <div class="sec-label">Stream line by line (Printrun-style, pausable)</div>
+      <div class="ctl-row">
+        <button class="primary" id="job-start" onclick="startJob()">▶ Stream</button>
+        <button id="job-pause" onclick="togglePauseJob()" disabled>⏸ Pause</button>
+        <button class="danger" id="job-stop" onclick="stopJob()" disabled>⏹ Stop</button>
+        <div class="progress"><div id="job-bar"></div></div>
+        <span class="lbl" id="job-label"></span>
+      </div>
+      <div class="sec-label">Or upload to SD card, then start it on the printer screen</div>
+      <div class="ctl-row">
+        <button class="primary" id="sd-upload" onclick="uploadToSd()">⬆ Upload to SD</button>
+        <label class="lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="auto-sd" checked> auto-upload when a file is loaded
+        </label>
+        <span class="lbl" id="sd-msg"></span>
+      </div>
+    </div>
+    <div class="sec-label">SD card files</div>
+    <div class="ctl-row">
+      <select id="sd-select"><option value="">— press Refresh to list —</option></select>
+      <button onclick="refreshSd()">⟳ Refresh</button>
+      <button class="primary" onclick="printFromSd()">▶ Print</button>
+      <button class="danger" onclick="deleteFromSd()">🗑 Delete</button>
+      <button id="prt-pause" onclick="printerCtl('pause')" hidden>⏸ Pause</button>
+      <button id="prt-resume" onclick="printerCtl('resume')" hidden>▶ Resume</button>
+      <button class="danger" id="prt-stop" onclick="printerCtl('stop')" hidden>⏹ Stop print</button>
+    </div>
+    <div class="lbl" id="sd-status" style="margin-top:8px;font-size:13px;color:var(--muted)"></div>
+  </div>
+
   <div class="card">
     <h2>G-code Console</h2>
     <div id="log"></div>
@@ -236,6 +319,7 @@
              autocomplete="off" spellcheck="false">
       <button id="send-btn" onclick="sendInput()">Send</button>
     </div>
+  </div>
   </div>
 </div>
 
@@ -319,6 +403,223 @@
     }
   });
 
+  // ── G-code file: load, parse, preview, stream, SD ──
+  let model = null, fileText = '', fileName = '';
+  let selLayer = -1;            // -1 = all layers
+  let lastProgress = -1, lastJobState = 'idle', sdBusy = false, isConnected = false;
+  try { if (localStorage.getItem('autoSd') === '0') $('auto-sd').checked = false; } catch (e) {}
+  $('auto-sd').addEventListener('change', e => {
+    try { localStorage.setItem('autoSd', e.target.checked ? '1' : '0'); } catch (err) {}
+  });
+
+  const drop = $('drop-zone');
+  drop.addEventListener('click', () => $('file-input').click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('drag');
+    if (e.dataTransfer.files.length) readFile(e.dataTransfer.files[0]);
+  });
+  $('file-input').addEventListener('change', e => {
+    if (e.target.files.length) readFile(e.target.files[0]);
+  });
+
+  function readFile(f) {
+    const r = new FileReader();
+    r.onload = () => loadText(f.name, r.result);
+    r.readAsText(f);
+  }
+
+  function parseGcode(text) {
+    const lines = text.split(/\r\n|\r|\n/);  // handle CRLF, lone CR (old Mac / some CAM tools), LF
+    let x = 0, y = 0, z = 0, e = 0, abs = true, absE = true;
+    const segs = [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let ln = 0; ln < lines.length; ln++) {
+      const raw = lines[ln].split(';')[0].trim();
+      if (!raw) continue;
+      const parts = raw.toUpperCase().split(/\s+/);
+      const cmd = parts[0];
+      const p = {};
+      for (let i = 1; i < parts.length; i++) {
+        const v = parseFloat(parts[i].slice(1));
+        if (!isNaN(v)) p[parts[i][0]] = v;
+      }
+      if (cmd === 'G90') { abs = true; absE = true; }
+      else if (cmd === 'G91') { abs = false; absE = false; }
+      else if (cmd === 'M82') absE = true;
+      else if (cmd === 'M83') absE = false;
+      else if (cmd === 'G92') {
+        if ('X' in p) x = p.X; if ('Y' in p) y = p.Y;
+        if ('Z' in p) z = p.Z; if ('E' in p) e = p.E;
+      }
+      else if (cmd === 'G28') { x = 0; y = 0; z = 0; }
+      else if (cmd === 'G0' || cmd === 'G1' || cmd === 'G2' || cmd === 'G3') {
+        const nx = 'X' in p ? (abs ? p.X : x + p.X) : x;
+        const ny = 'Y' in p ? (abs ? p.Y : y + p.Y) : y;
+        const nz = 'Z' in p ? (abs ? p.Z : z + p.Z) : z;
+        const ne = 'E' in p ? (absE ? p.E : e + p.E) : e;
+        const ex = ne > e + 1e-6;
+        if ((cmd === 'G2' || cmd === 'G3') && ('I' in p || 'J' in p)) {
+          const cx = x + (p.I || 0), cy = y + (p.J || 0);
+          const r = Math.hypot(x - cx, y - cy);
+          let a0 = Math.atan2(y - cy, x - cx), a1 = Math.atan2(ny - cy, nx - cx);
+          if (cmd === 'G2' && a1 >= a0 - 1e-9) a1 -= 2 * Math.PI;
+          if (cmd === 'G3' && a1 <= a0 + 1e-9) a1 += 2 * Math.PI;
+          const steps = Math.max(2, Math.ceil(Math.abs(a1 - a0) * r));  // ~1mm chords
+          let px = x, py = y;
+          for (let st = 1; st <= steps; st++) {
+            const a = a0 + (a1 - a0) * st / steps;
+            const qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
+            segs.push({ x0: px, y0: py, x1: qx, y1: qy, z: nz, ex, ln });
+            px = qx; py = qy;
+          }
+        } else if (nx !== x || ny !== y) {
+          segs.push({ x0: x, y0: y, x1: nx, y1: ny, z: nz, ex, ln });
+        }
+        if (nx !== x || ny !== y) {
+          minX = Math.min(minX, x, nx); maxX = Math.max(maxX, x, nx);
+          minY = Math.min(minY, y, ny); maxY = Math.max(maxY, y, ny);
+        }
+        x = nx; y = ny; z = nz; e = ne;
+      }
+    }
+    const exZs = [...new Set(segs.filter(sg => sg.ex).map(sg => sg.z))].sort((a, b) => a - b);
+    const layerZs = exZs.length ? exZs : [...new Set(segs.map(sg => sg.z))].sort((a, b) => a - b);
+    return { segs, layerZs, bounds: { minX, minY, maxX, maxY }, lineCount: lines.length };
+  }
+
+  function loadText(name, text) {
+    fileName = name; fileText = text;
+    model = parseGcode(text);
+    selLayer = -1;
+    $('file-info').hidden = false;
+    $('file-name').textContent = name;
+    const b = model.bounds;
+    const dims = isFinite(b.minX)
+      ? ` · ${(b.maxX - b.minX).toFixed(0)}×${(b.maxY - b.minY).toFixed(0)} mm` : '';
+    const nl = model.layerZs.length;
+    $('file-stats').textContent = `${model.lineCount} lines · ${nl} layer${nl === 1 ? '' : 's'}${dims}`;
+    $('file-warn').hidden = model.lineCount <= 3000;
+    const sl = $('layer-slider');
+    sl.max = nl; sl.value = 0;
+    $('layer-label').textContent = 'all';
+    drawPreview(-1);
+    addLog(`· Loaded ${name} (${model.lineCount} lines)`, 'sys');
+    if ($('auto-sd').checked && isConnected) uploadToSd();
+  }
+
+  function layerChanged() {
+    const v = +$('layer-slider').value;
+    selLayer = v === 0 ? -1 : v - 1;
+    $('layer-label').textContent = v === 0 ? 'all' : 'z=' + model.layerZs[v - 1];
+    drawPreview(lastProgress);
+  }
+
+  function drawPreview(progressLine) {
+    lastProgress = progressLine;
+    if (!model) return;
+    const c = $('preview'), ctx = c.getContext('2d');
+    const BED = 256, sc = c.width / BED;
+    ctx.fillStyle = '#0a0e12';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.strokeStyle = '#182028';
+    ctx.lineWidth = 1;
+    for (let g = 0; g <= BED; g += 32) {
+      ctx.beginPath(); ctx.moveTo(g * sc, 0); ctx.lineTo(g * sc, c.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, g * sc); ctx.lineTo(c.width, g * sc); ctx.stroke();
+    }
+    const zSel = selLayer >= 0 ? model.layerZs[selLayer] : null;
+    const pass = (test, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      for (const sg of model.segs) {
+        if (zSel !== null && sg.z !== zSel) continue;
+        if (!test(sg)) continue;
+        ctx.moveTo(sg.x0 * sc, c.height - sg.y0 * sc);
+        ctx.lineTo(sg.x1 * sc, c.height - sg.y1 * sc);
+      }
+      ctx.stroke();
+    };
+    pass(sg => !sg.ex && sg.ln >= progressLine, '#39434d', 0.8);
+    pass(sg => sg.ex && sg.ln >= progressLine, '#00c257', 1.6);
+    if (progressLine >= 0) pass(sg => sg.ln < progressLine, '#ffb454', 1.6);
+  }
+
+  async function post(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    return r.json();
+  }
+
+  async function startJob() {
+    if (!fileText) return;
+    const r = await post('/api/job/start', { filename: fileName, gcode: fileText });
+    if (!r.ok) addLog('<< stream: ' + (r.error || 'failed'), 'err');
+    else addLog('>> streaming ' + fileName, 'tx');
+  }
+  async function togglePauseJob() {
+    await post(lastJobState === 'paused' ? '/api/job/resume' : '/api/job/pause');
+  }
+  async function stopJob() { await post('/api/job/stop'); }
+
+  async function uploadToSd() {
+    if (!fileText || sdBusy) return;
+    sdBusy = true;
+    $('sd-msg').textContent = 'Uploading…';
+    let thumbnail = '';
+    try { thumbnail = $('preview').toDataURL('image/png'); } catch (e) {}
+    const r = await post('/api/sd/upload', { filename: fileName, gcode: fileText, thumbnail });
+    sdBusy = false;
+    if (r.ok) {
+      $('sd-msg').textContent = 'On SD as ' + r.name + ' — start it on the printer screen';
+      addLog('· Uploaded to SD: ' + r.name, 'sys');
+      refreshSd(r.name);
+    } else {
+      $('sd-msg').textContent = r.error || 'upload failed';
+    }
+  }
+  async function refreshSd(selectName) {
+    const r = await (await fetch('/api/sd/list')).json();
+    const sel = $('sd-select');
+    sel.innerHTML = '';
+    (r.files || []).forEach(f => {
+      const o = document.createElement('option');
+      o.value = f; o.textContent = f;
+      sel.appendChild(o);
+    });
+    if (!sel.options.length) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = r.ok ? '— no .3mf on SD —' : (r.error || 'FTP failed');
+      sel.appendChild(o);
+    }
+    if (selectName) sel.value = selectName;
+  }
+  async function printFromSd() {
+    const name = $('sd-select').value;
+    if (!name) return;
+    $('sd-status').textContent = 'Starting ' + name + '…';
+    const r = await post('/api/sd/print', { name });
+    $('sd-status').textContent = r.ok ? 'Print started: ' + name : (r.error || 'failed');
+    addLog(r.ok ? '>> SD print started: ' + name : '<< sd print: ' + (r.error || 'failed'),
+           r.ok ? 'tx' : 'err');
+  }
+  async function deleteFromSd() {
+    const name = $('sd-select').value;
+    if (!name || !confirm('Delete ' + name + ' from the SD card?')) return;
+    const r = await post('/api/sd/delete', { name });
+    $('sd-status').textContent = r.ok ? 'Deleted ' + name : (r.error || 'delete failed');
+    if (r.ok) refreshSd();
+  }
+  async function printerCtl(cmd) {
+    const r = await post('/api/print/' + cmd);
+    addLog(r.ok ? '>> printer ' + cmd : '<< ' + cmd + ': ' + (r.error || 'failed'),
+           r.ok ? 'tx' : 'err');
+  }
+
   const fmt = v => (v === undefined || v === null) ? '—' : Number(v).toFixed(1) + '°';
   let prefilled = false;
 
@@ -370,6 +671,7 @@
       const d = await (await fetch('/api/status')).json();
       const s = d.status || {};
       updateOverlay(d);
+      isConnected = d.connected;
       $('conn-dot').classList.toggle('on', d.connected);
       $('printer-id').textContent = (d.ip && d.serial) ? d.ip + ' · ' + d.serial : '';
       $('nozzle-t').textContent = fmt(s.nozzle_temper);
@@ -381,6 +683,33 @@
       $('state').textContent = s.gcode_state || '—';
       $('state-chip').classList.toggle('printing', s.gcode_state === 'RUNNING');
       $('wifi').textContent = s.wifi_signal || '—';
+
+      // stream-job UI
+      const j = d.job || { state: 'idle' };
+      if (j.state !== lastJobState) {
+        if (j.state === 'done') addLog('<< stream finished (' + j.total + ' lines)', 'ok');
+        if (j.state === 'error') addLog('<< stream error: ' + j.error, 'err');
+        if (j.state === 'stopped') addLog('<< stream stopped', 'sys');
+        lastJobState = j.state;
+        if (model && (j.state === 'done' || j.state === 'stopped' || j.state === 'error'))
+          drawPreview(-1);
+      }
+      const running = j.state === 'running', paused = j.state === 'paused';
+      $('job-start').disabled = running || paused || !fileText;
+      $('job-pause').disabled = !(running || paused);
+      $('job-pause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+      $('job-stop').disabled = !(running || paused);
+      const pct = j.total ? Math.round(100 * j.current / j.total) : 0;
+      $('job-bar').style.width = ((running || paused || j.state === 'done') ? pct : 0) + '%';
+      $('job-label').textContent =
+        (running || paused) ? `${j.current}/${j.total} (${pct}%)` : (j.state === 'done' ? 'done' : '');
+      if ((running || paused) && model) drawPreview(j.current);
+
+      // printer-level pause/resume/stop (for SD prints)
+      const gs = s.gcode_state || '';
+      $('prt-pause').hidden = gs !== 'RUNNING';
+      $('prt-resume').hidden = gs !== 'PAUSE';
+      $('prt-stop').hidden = !(gs === 'RUNNING' || gs === 'PAUSE');
     } catch (e) {
       $('conn-dot').classList.remove('on');
     }
