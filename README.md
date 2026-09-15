@@ -30,7 +30,7 @@ Bambu A1 没有 USB Type-B 串口,不能像 Marlin 打印机那样用 Pronterfac
 pip install "paho-mqtt>=2.0"
 ```
 
-**最省事的方式:双击 `启动控制台.bat`** —— 浏览器会自动打开控制台页面,访问码/IP 填一次就记住(存在 `~/.bambu-gcode-console.json`),之后每次只要点一下「连接」。关掉黑色命令行窗口即停止服务。
+**最省事的方式:双击 `start_console.bat`** —— 浏览器会自动打开控制台页面,访问码/IP 填一次就记住(存在 `~/.bambu-gcode-console.json`),之后每次只要点一下 Connect。关掉黑色命令行窗口即停止服务。界面为英文(英文授课用)。
 
 > 为什么不能直接双击 html?浏览器没法直接说打印机的 MQTT 协议,中间必须有个本地 Python 桥,`.bat` 就是一键把桥拉起来再开浏览器。
 

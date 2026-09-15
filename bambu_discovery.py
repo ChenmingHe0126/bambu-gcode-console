@@ -61,7 +61,7 @@ def discover(timeout=20.0):
         except OSError:
             continue  # 被 Bambu Studio/OrcaSlicer 占用就跳过这个端口
     if not socks:
-        print("[SSDP] 1990/2021 端口都监听不了(切片软件占用?)")
+        print("[SSDP] cannot listen on ports 1990/2021 (Bambu Studio/OrcaSlicer running?)")
         return None
     end = time.time() + timeout
     try:
@@ -109,18 +109,18 @@ def resolve(ip=None, serial=None):
                         "model": cache.get("model", "?"), "name": cache.get("name", "?")}
                 save_cache(info)
                 return info
-            print(f"[{ip}] 可达但缺序列号,尝试自动发现补齐…")
+            print(f"[{ip}] reachable but serial unknown, trying auto-discovery…")
         else:
-            print(f"[{ip}] 8883 端口不通(打印机 IP 变了?),尝试其他方式…")
+            print(f"[{ip}] port 8883 unreachable (printer IP changed?), trying fallbacks…")
 
     cached_ip = cache.get("ip")
     if cached_ip and cached_ip != ip and serial and probe(cached_ip):
-        print(f"使用上次成功的地址 {cached_ip}")
+        print(f"Using last known address {cached_ip}")
         info = dict(cache, ip=cached_ip, serial=serial)
         save_cache(info)
         return info
 
-    print("正在监听打印机 SSDP 广播(最多 20 秒)…")
+    print("Listening for printer SSDP broadcast (up to 20 s)…")
     found = discover()
     if found:
         save_cache(found)
@@ -135,5 +135,6 @@ if __name__ == "__main__":
             stream.reconfigure(encoding="utf-8", errors="replace")
     found = resolve()
     print(found if found else
-          "没找到打印机:确认打印机开机且和电脑同网段;校园网收不到广播时,"
-          "去打印机屏幕 设置→网络 查 IP,用 --ip 传入(会自动记住)")
+          "Printer not found. Check it is on and on the same network; if broadcasts are "
+          "filtered (campus Wi-Fi), read the IP from the printer's Settings > Network "
+          "screen and pass it via --ip (it will be remembered).")

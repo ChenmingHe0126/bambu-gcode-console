@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bambu A1 控制台</title>
+<title>Bambu A1 Console</title>
 <style>
   :root {
     --bg: #0e1216;
@@ -90,7 +90,7 @@
   /* ── 温度 ── */
   .temp-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 10px 0; }
   .temp-row + .temp-row { border-top: 1px dashed var(--line); }
-  .temp-name { width: 52px; color: var(--muted); font-size: 14px; }
+  .temp-name { width: 60px; color: var(--muted); font-size: 14px; }
   .temp-val { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
   .temp-val.hot { color: var(--amber); }
   .temp-target { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
@@ -157,9 +157,9 @@
 
 <header>
   <div class="dot" id="conn-dot"></div>
-  <h1>Bambu A1 控制台<small id="printer-id"></small></h1>
+  <h1>Bambu A1 Console<small id="printer-id"></small></h1>
   <div class="chips">
-    <div class="chip" id="state-chip">状态 <b id="state">—</b></div>
+    <div class="chip" id="state-chip">State <b id="state">—</b></div>
     <div class="chip">WiFi <b id="wifi">—</b></div>
   </div>
 </header>
@@ -167,60 +167,60 @@
 <div class="grid">
   <div class="col">
     <div class="card">
-      <h2>移动 · Jog</h2>
+      <h2>Jog</h2>
       <div class="jog-wrap">
         <div>
           <div class="pad">
             <div></div>
-            <button class="jog-btn" onclick="jog('Y', 1)">Y+<span>后</span></button>
+            <button class="jog-btn" onclick="jog('Y', 1)">Y+<span>back</span></button>
             <div></div>
-            <button class="jog-btn" onclick="jog('X', -1)">X−<span>左</span></button>
-            <button class="home-btn" onclick="home()" title="G28 全部归零">⌂</button>
-            <button class="jog-btn" onclick="jog('X', 1)">X+<span>右</span></button>
+            <button class="jog-btn" onclick="jog('X', -1)">X−<span>left</span></button>
+            <button class="home-btn" onclick="home()" title="G28 — home all axes">⌂</button>
+            <button class="jog-btn" onclick="jog('X', 1)">X+<span>right</span></button>
             <div></div>
-            <button class="jog-btn" onclick="jog('Y', -1)">Y−<span>前</span></button>
+            <button class="jog-btn" onclick="jog('Y', -1)">Y−<span>front</span></button>
             <div></div>
           </div>
           <div class="axis-label">X / Y</div>
         </div>
         <div>
           <div class="zpad">
-            <button class="jog-btn" onclick="jog('Z', 1)">Z+<span>升</span></button>
-            <button class="jog-btn" onclick="jog('Z', -1)">Z−<span>降</span></button>
+            <button class="jog-btn" onclick="jog('Z', 1)">Z+<span>up</span></button>
+            <button class="jog-btn" onclick="jog('Z', -1)">Z−<span>down</span></button>
           </div>
           <div class="axis-label">Z</div>
         </div>
       </div>
       <div class="step-row">
-        <span class="lbl">步进</span>
+        <span class="lbl">Step</span>
         <button class="seg" data-step="0.1" onclick="setStep(this)">0.1</button>
         <button class="seg" data-step="1" onclick="setStep(this)">1</button>
         <button class="seg active" data-step="10" onclick="setStep(this)">10</button>
         <button class="seg" data-step="50" onclick="setStep(this)">50</button>
         <span class="lbl">mm</span>
       </div>
-      <div class="hint"><b>先按 ⌂ 归零</b>再移动;XY 6000 mm/min,Z 1200 mm/min</div>
+      <div class="hint"><b>Home (⌂) before moving</b> · XY 6000 mm/min, Z 1200 mm/min</div>
     </div>
 
     <div class="card">
-      <h2>温度</h2>
+      <h2>Temperatures</h2>
       <div class="temp-row">
-        <span class="temp-name">喷嘴</span>
+        <span class="temp-name">Nozzle</span>
         <span class="temp-val" id="nozzle-t">—</span>
         <span class="temp-target">/ <span id="nozzle-tt">0</span>°C</span>
         <div class="temp-btns">
-          <button class="off" onclick="g('M104 S0')">关</button>
+          <button class="off" onclick="g('M104 S0')">Off</button>
           <button onclick="g('M104 S150')">150</button>
           <button onclick="g('M104 S200')">200</button>
           <button onclick="g('M104 S220')">220</button>
         </div>
       </div>
       <div class="temp-row">
-        <span class="temp-name">热床</span>
+        <span class="temp-name">Bed</span>
         <span class="temp-val" id="bed-t">—</span>
         <span class="temp-target">/ <span id="bed-tt">0</span>°C</span>
         <div class="temp-btns">
-          <button class="off" onclick="g('M140 S0')">关</button>
+          <button class="off" onclick="g('M140 S0')">Off</button>
           <button onclick="g('M140 S45')">45</button>
           <button onclick="g('M140 S60')">60</button>
         </div>
@@ -229,29 +229,29 @@
   </div>
 
   <div class="card">
-    <h2>G-code 控制台</h2>
+    <h2>G-code Console</h2>
     <div id="log"></div>
     <div class="send-row">
-      <input id="gcode-input" placeholder="输入 G-code,回车发送 — 如 G28 / G1 X128 Y128 F6000"
+      <input id="gcode-input" placeholder="Type G-code, Enter to send — e.g. G28 / G1 X128 Y128 F6000"
              autocomplete="off" spellcheck="false">
-      <button id="send-btn" onclick="sendInput()">发送</button>
+      <button id="send-btn" onclick="sendInput()">Send</button>
     </div>
   </div>
 </div>
 
 <div id="overlay">
   <div class="connect-card">
-    <h3>连接打印机</h3>
-    <div class="sub">确认打印机已开机,并已开启 LAN-only 模式 + 开发者模式</div>
+    <h3>Connect to Printer</h3>
+    <div class="sub">Make sure the printer is on, with LAN-only Mode + Developer Mode enabled</div>
     <div class="field">
-      <label>访问码 Access Code(LAN-only 模式页面上那 8 位)</label>
+      <label>Access Code (8 characters, on the printer's LAN-only Mode screen)</label>
       <input id="code-input" autocomplete="off" spellcheck="false">
     </div>
     <div class="field">
-      <label>IP 地址(可选,留空自动发现)</label>
-      <input id="ip-input" autocomplete="off" spellcheck="false" placeholder="自动发现">
+      <label>IP address (optional — leave empty to auto-discover)</label>
+      <input id="ip-input" autocomplete="off" spellcheck="false" placeholder="auto-discover">
     </div>
-    <button id="connect-btn" onclick="doConnect()">连接</button>
+    <button id="connect-btn" onclick="doConnect()">Connect</button>
     <div id="connect-msg"></div>
   </div>
 </div>
@@ -283,7 +283,7 @@
       if (d.result === 'success') addLog('<< ok', 'ok');
       else addLog('<< ' + d.result + (d.reason ? ' — ' + d.reason : ''), 'err');
     } catch (e) {
-      addLog('<< 网络错误: ' + e.message, 'err');
+      addLog('<< network error: ' + e.message, 'err');
     }
   }
   const g = sendGcode;
@@ -293,7 +293,7 @@
     const dist = (dir * step).toFixed(1).replace(/\.0$/, '');
     sendGcode(`G91\nG1 ${axis}${dist} F${feed}\nG90`, `jog ${axis}${dir > 0 ? '+' : '−'}${step}mm`);
   }
-  function home() { sendGcode('G28', 'G28(全部归零)'); }
+  function home() { sendGcode('G28', 'G28 (home all axes)'); }
 
   function setStep(btn) {
     step = parseFloat(btn.dataset.step);
@@ -326,9 +326,9 @@
     const code = $('code-input').value.trim();
     const ip = $('ip-input').value.trim();
     const msg = $('connect-msg');
-    if (!code) { msg.textContent = '请输入访问码'; msg.className = 'err'; return; }
+    if (!code) { msg.textContent = 'Please enter the access code'; msg.className = 'err'; return; }
     $('connect-btn').disabled = true;
-    msg.textContent = '正在发现并连接打印机…(收不到广播时最多等 20 秒)';
+    msg.textContent = 'Discovering and connecting… (up to 20 s if broadcasts are filtered)';
     msg.className = 'busy';
     try {
       await fetch('/api/connect', {
@@ -337,7 +337,7 @@
         body: JSON.stringify({ code, ip }),
       });
     } catch (e) {
-      msg.textContent = '本地服务不可达: ' + e.message;
+      msg.textContent = 'Local bridge unreachable: ' + e.message;
       msg.className = 'err';
       $('connect-btn').disabled = false;
     }
@@ -357,7 +357,7 @@
     overlay.hidden = false;
     if (d.phase === 'connecting') {
       $('connect-btn').disabled = true;
-      msg.textContent = '正在发现并连接打印机…';
+      msg.textContent = 'Discovering and connecting…';
       msg.className = 'busy';
     } else {
       $('connect-btn').disabled = false;
@@ -385,7 +385,7 @@
       $('conn-dot').classList.remove('on');
     }
   }
-  addLog('· 网页控制台就绪 — 移动前请先归零 (⌂ 或 G28)', 'sys');
+  addLog('· Console ready — home the printer (⌂ or G28) before moving', 'sys');
   poll();
   setInterval(poll, 1000);
 </script>

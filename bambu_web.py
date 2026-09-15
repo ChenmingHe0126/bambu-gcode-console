@@ -91,7 +91,7 @@ class BambuLink:
             )
         else:
             self.auth_failed = True
-            print(f"[MQTT] 连接被拒 rc={rc}", file=sys.stderr)
+            print(f"[MQTT] connection refused rc={rc}", file=sys.stderr)
 
     def _on_disconnect(self, c, userdata, flags, rc, props=None):
         self.connected = False
@@ -125,7 +125,7 @@ class BambuLink:
         self._ack_events.pop(seq, None)
         result, reason = self._acks.pop(seq, ("timeout", ""))
         if not got:
-            result, reason = "timeout", "3 秒内未收到回执"
+            result, reason = "timeout", "no ack within 3 s"
         return {"result": result, "reason": reason}
 
 
@@ -150,7 +150,8 @@ class App:
         if upd:
             save_cache(upd)
         if not load_cache().get("code"):
-            self.phase, self.error = "error", "请输入访问码(打印机 LAN-only 模式页面上那 8 位)"
+            self.phase = "error"
+            self.error = "Access code required (the 8 characters on the printer's LAN-only Mode screen)"
             return
         if not self._busy.acquire(blocking=False):
             return  # 已经在连了
@@ -163,8 +164,9 @@ class App:
             found = resolve(cfg.get("ip"), cfg.get("serial"))
             if not found:
                 self.phase = "error"
-                self.error = ("没找到打印机:确认开机且和电脑同网段;"
-                              "校园网收不到广播时,去打印机 设置→网络 查 IP 填到下面")
+                self.error = ("Printer not found. Check it is on and on the same network; "
+                              "if broadcasts are filtered (campus Wi-Fi), read the IP from "
+                              "the printer's Settings → Network screen and enter it below.")
                 return
             if self.link:
                 self.link.stop()
@@ -173,7 +175,7 @@ class App:
             try:
                 link.start()
             except OSError as e:
-                self.phase, self.error = "error", f"连不上 {found['ip']}:8883 — {e}"
+                self.phase, self.error = "error", f"Cannot reach {found['ip']}:8883 — {e}"
                 return
             for _ in range(60):  # 最多等 6 秒
                 if link.connected or link.auth_failed:
@@ -182,12 +184,12 @@ class App:
             if link.connected:
                 self.link = link
                 self.phase, self.error = "connected", ""
-                print(f"已连接打印机 {found.get('name', '?')} @ {found['ip']}")
+                print(f"Connected to printer {found.get('name', '?')} @ {found['ip']}")
             else:
                 link.stop()
                 self.phase = "error"
-                self.error = ("连接被拒或超时:访问码对不对?"
-                              "LAN-only 模式和开发者模式都开了吗?")
+                self.error = ("Connection refused or timed out. Is the access code right? "
+                              "Are LAN-only Mode and Developer Mode both enabled?")
         finally:
             self._busy.release()
 
@@ -259,7 +261,7 @@ def make_handler(app: App, html_path: Path):
                     return
                 link = app.link
                 if not (link and link.connected):
-                    self._json({"result": "error", "reason": "还没连接打印机"})
+                    self._json({"result": "error", "reason": "printer not connected — click Connect first"})
                     return
                 self._json(link.send_gcode(gcode))
             else:
@@ -273,14 +275,14 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    ap = argparse.ArgumentParser(description="Bambu A1 网页控制台")
-    ap.add_argument("--ip", help="打印机 IP(可选,会记住)")
-    ap.add_argument("--serial", help="打印机序列号(可选,会记住)")
-    ap.add_argument("--code", help="LAN-only 访问码(可选,会记住)")
-    ap.add_argument("--port", type=int, default=8347, help="网页端口(默认 8347)")
+    ap = argparse.ArgumentParser(description="Bambu A1 web console")
+    ap.add_argument("--ip", help="printer IP (optional, remembered)")
+    ap.add_argument("--serial", help="printer serial number (optional, remembered)")
+    ap.add_argument("--code", help="LAN-only Mode access code (optional, remembered)")
+    ap.add_argument("--port", type=int, default=8347, help="web port (default 8347)")
     ap.add_argument("--host", default="127.0.0.1",
-                    help="监听地址;设为 0.0.0.0 可让同网段其他设备访问")
-    ap.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
+                    help="bind address; 0.0.0.0 lets other devices on the LAN access it")
+    ap.add_argument("--no-browser", action="store_true", help="do not auto-open the browser")
     args = ap.parse_args()
 
     app = App(args.ip, args.serial, args.code)
@@ -288,11 +290,12 @@ def main():
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(app, html_path))
     except OSError as e:
-        print(f"[端口 {args.port} 起不来] {e}(已经开了一个控制台?)", file=sys.stderr)
+        print(f"[port {args.port} unavailable] {e} (is another console already running?)",
+              file=sys.stderr)
         sys.exit(1)
 
     url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
-    print(f"网页控制台: {url}  (Ctrl+C 或直接关窗口退出)")
+    print(f"Web console: {url}  (Ctrl+C or close this window to quit)")
     if not args.no_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:

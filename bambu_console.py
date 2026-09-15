@@ -58,7 +58,7 @@ def make_client(args):
 
     def on_connect(c, userdata, flags, rc, props=None):
         if rc == 0:
-            print(f"[已连接 {args.ip}] 订阅状态推送…")
+            print(f"[connected to {args.ip}] subscribing to status reports…")
             c.subscribe(f"device/{args.serial}/report")
             # 请求一次全量状态,拿到初始温度等
             c.publish(
@@ -66,7 +66,7 @@ def make_client(args):
                 json.dumps({"pushing": {"sequence_id": next_seq(), "command": "pushall"}}),
             )
         else:
-            print(f"[连接失败] rc={rc}(检查 IP/访问码,以及开发者模式是否已开启)")
+            print(f"[connection refused] rc={rc} (check IP/access code, and that Developer Mode is on)")
 
     def on_message(c, userdata, msg):
         try:
@@ -104,23 +104,24 @@ def send_gcode(client, serial, line):
 
 def print_status():
     if not last_status:
-        print("  (还没收到状态推送,稍等 1-2 秒再试)")
+        print("  (no status report yet — wait a second and try again)")
         return
     n = last_status.get("nozzle_temper", "?")
     nt = last_status.get("nozzle_target_temper", "?")
     b = last_status.get("bed_temper", "?")
     bt = last_status.get("bed_target_temper", "?")
     st = last_status.get("gcode_state", "?")
-    print(f"  喷嘴 {n}/{nt}°C  热床 {b}/{bt}°C  状态 {st}")
+    print(f"  nozzle {n}/{nt}°C  bed {b}/{bt}°C  state {st}")
 
 
-HELP = """命令:
-  <任意 G-code>   逐行发送执行,如 G28 / G90 / G1 X128 Y128 F6000 / M104 S150
-  status          查看喷嘴/热床温度和打印机状态
-  help            显示本帮助
-  exit / quit     退出
-注意:gcode_line 只回"已接受",不回位置/参数(M114 之类不会有输出);
-      移动前先 G28 归零,课堂演示建议温度不超过 M104 S150。"""
+HELP = """Commands:
+  <any G-code>    executed line by line, e.g. G28 / G90 / G1 X128 Y128 F6000 / M104 S150
+  status          show nozzle/bed temperatures and printer state
+  help            show this help
+  exit / quit     leave the console
+Note: gcode_line only acks acceptance — query commands like M114 return no
+      output. Home first (G28) before moving; keep demo temps at or below
+      M104 S150."""
 
 
 def main():
@@ -128,38 +129,38 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    ap = argparse.ArgumentParser(description="Bambu A1 逐行 G-code 控制台")
-    ap.add_argument("--ip", help="打印机局域网 IP(留空则 SSDP 自动发现)")
-    ap.add_argument("--serial", help="打印机序列号(留空则 SSDP 自动发现)")
-    ap.add_argument("--code", help="LAN-only 模式访问码(填过一次会记住)")
+    ap = argparse.ArgumentParser(description="Line-by-line G-code console for Bambu Lab A1")
+    ap.add_argument("--ip", help="printer LAN IP (omit to auto-discover)")
+    ap.add_argument("--serial", help="printer serial number (omit to auto-discover)")
+    ap.add_argument("--code", help="LAN-only Mode access code (remembered after first use)")
     args = ap.parse_args()
 
     if not args.code:
         args.code = load_cache().get("code", "")
     if not args.code:
         try:
-            args.code = input("访问码 Access Code(LAN-only 模式页面上那 8 位): ").strip()
+            args.code = input("Access Code (8 characters on the LAN-only Mode screen): ").strip()
         except (EOFError, KeyboardInterrupt):
             args.code = ""
     if not args.code:
-        print("没有访问码,退出")
+        print("No access code, exiting")
         sys.exit(1)
     save_cache({"code": args.code})
 
     found = resolve(args.ip, args.serial)
     if not found:
-        print("没找到打印机:确认打印机开机且和电脑同网段;"
-              "或去打印机屏幕 设置→网络 查 IP,用 --ip 传入(会自动记住)")
+        print("Printer not found. Check it is on and on the same network, or read the IP "
+              "from the printer's Settings > Network screen and pass --ip (remembered).")
         sys.exit(1)
     args.ip, args.serial = found["ip"], found["serial"]
-    print(f"打印机: {found.get('name', '?')} ({found.get('model', '?')}) "
+    print(f"Printer: {found.get('name', '?')} ({found.get('model', '?')}) "
           f"@ {args.ip}  SN {args.serial}")
 
     client = make_client(args)
     try:
         client.connect(args.ip, 8883, keepalive=30)
     except OSError as e:
-        print(f"[无法连接 {args.ip}:8883] {e}")
+        print(f"[cannot reach {args.ip}:8883] {e}")
         sys.exit(1)
     client.loop_start()
     time.sleep(1.5)
@@ -185,7 +186,7 @@ def main():
 
     client.loop_stop()
     client.disconnect()
-    print("再见")
+    print("Bye")
 
 
 if __name__ == "__main__":
