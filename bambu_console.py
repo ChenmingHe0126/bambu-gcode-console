@@ -26,7 +26,7 @@ import time
 
 import paho.mqtt.client as mqtt
 
-from bambu_discovery import resolve
+from bambu_discovery import load_cache, resolve, save_cache
 
 seq = 0
 last_status = {}  # 最近一次 report 里关心的字段缓存
@@ -131,8 +131,20 @@ def main():
     ap = argparse.ArgumentParser(description="Bambu A1 逐行 G-code 控制台")
     ap.add_argument("--ip", help="打印机局域网 IP(留空则 SSDP 自动发现)")
     ap.add_argument("--serial", help="打印机序列号(留空则 SSDP 自动发现)")
-    ap.add_argument("--code", required=True, help="LAN-only 模式访问码")
+    ap.add_argument("--code", help="LAN-only 模式访问码(填过一次会记住)")
     args = ap.parse_args()
+
+    if not args.code:
+        args.code = load_cache().get("code", "")
+    if not args.code:
+        try:
+            args.code = input("访问码 Access Code(LAN-only 模式页面上那 8 位): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            args.code = ""
+    if not args.code:
+        print("没有访问码,退出")
+        sys.exit(1)
+    save_cache({"code": args.code})
 
     found = resolve(args.ip, args.serial)
     if not found:

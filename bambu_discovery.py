@@ -39,8 +39,11 @@ def load_cache():
 
 
 def save_cache(info):
+    """合并写入(文件同时存着访问码等其他字段,别整个覆盖)。"""
     try:
-        CACHE_FILE.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+        merged = load_cache()
+        merged.update({k: v for k, v in info.items() if v})
+        CACHE_FILE.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass  # 缓存写不进去不致命
 

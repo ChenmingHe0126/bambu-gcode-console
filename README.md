@@ -30,6 +30,10 @@ Bambu A1 没有 USB Type-B 串口,不能像 Marlin 打印机那样用 Pronterfac
 pip install "paho-mqtt>=2.0"
 ```
 
+**最省事的方式:双击 `启动控制台.bat`** —— 浏览器会自动打开控制台页面,访问码/IP 填一次就记住(存在 `~/.bambu-gcode-console.json`),之后每次只要点一下「连接」。关掉黑色命令行窗口即停止服务。
+
+> 为什么不能直接双击 html?浏览器没法直接说打印机的 MQTT 协议,中间必须有个本地 Python 桥,`.bat` 就是一键把桥拉起来再开浏览器。
+
 两个入口都支持**自动发现**:`--ip`/`--serial` 可以不填,程序按「显式参数(先探测可达)→ 上次成功的缓存地址(`~/.bambu-gcode-console.json`)→ SSDP 广播监听」的顺序自己找打印机。首次使用或换网络时建议手动传一次 `--ip`,之后就会记住。注意:校园/企业 WiFi 常过滤广播,Windows 在 Public 网络下也拦入站 UDP——SSDP 收不到时去打印机屏幕 设置→网络 查 IP 即可;Bambu Studio/OrcaSlicer 开着会占用发现端口。
 
 **方式一:命令行控制台**(最像 Pronterface 的串口终端)

@@ -120,6 +120,37 @@
     background: var(--accent); border-color: var(--accent); color: #04140a;
   }
   #send-btn:hover { background: var(--accent-press); }
+
+  /* ── 连接面板 ── */
+  #overlay {
+    position: fixed; inset: 0; z-index: 10;
+    background: rgba(8, 11, 14, .8); backdrop-filter: blur(6px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #overlay[hidden] { display: none; }
+  .connect-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    padding: 32px 36px 28px; width: min(400px, 92vw);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+  }
+  .connect-card h3 { font-size: 20px; font-weight: 650; margin-bottom: 6px; }
+  .connect-card .sub { color: var(--muted); font-size: 13.5px; margin-bottom: 22px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .field input {
+    width: 100%; font-family: var(--mono); font-size: 15px; color: var(--text);
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 11px 14px; outline: none; transition: border-color .15s;
+  }
+  .field input:focus { border-color: var(--accent); }
+  #connect-btn {
+    width: 100%; padding: 13px; border-radius: 12px; font-weight: 700; font-size: 16px;
+    background: var(--accent); border-color: var(--accent); color: #04140a; margin-top: 4px;
+  }
+  #connect-btn:hover { background: var(--accent-press); }
+  #connect-msg { min-height: 22px; font-size: 13px; margin-top: 12px; text-align: center; }
+  #connect-msg.err { color: var(--red); }
+  #connect-msg.busy { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -208,6 +239,23 @@
   </div>
 </div>
 
+<div id="overlay">
+  <div class="connect-card">
+    <h3>连接打印机</h3>
+    <div class="sub">确认打印机已开机,并已开启 LAN-only 模式 + 开发者模式</div>
+    <div class="field">
+      <label>访问码 Access Code(LAN-only 模式页面上那 8 位)</label>
+      <input id="code-input" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>IP 地址(可选,留空自动发现)</label>
+      <input id="ip-input" autocomplete="off" spellcheck="false" placeholder="自动发现">
+    </div>
+    <button id="connect-btn" onclick="doConnect()">连接</button>
+    <div id="connect-msg"></div>
+  </div>
+</div>
+
 <script>
   let step = 10;
   const $ = id => document.getElementById(id);
@@ -272,12 +320,58 @@
   });
 
   const fmt = v => (v === undefined || v === null) ? '—' : Number(v).toFixed(1) + '°';
+  let prefilled = false;
+
+  async function doConnect() {
+    const code = $('code-input').value.trim();
+    const ip = $('ip-input').value.trim();
+    const msg = $('connect-msg');
+    if (!code) { msg.textContent = '请输入访问码'; msg.className = 'err'; return; }
+    $('connect-btn').disabled = true;
+    msg.textContent = '正在发现并连接打印机…(收不到广播时最多等 20 秒)';
+    msg.className = 'busy';
+    try {
+      await fetch('/api/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, ip }),
+      });
+    } catch (e) {
+      msg.textContent = '本地服务不可达: ' + e.message;
+      msg.className = 'err';
+      $('connect-btn').disabled = false;
+    }
+  }
+  $('code-input').addEventListener('keydown', e => { if (e.key === 'Enter') doConnect(); });
+  $('ip-input').addEventListener('keydown', e => { if (e.key === 'Enter') doConnect(); });
+
+  function updateOverlay(d) {
+    const overlay = $('overlay');
+    const msg = $('connect-msg');
+    if (!prefilled) {
+      if (d.code) $('code-input').value = d.code;
+      if (d.ip) $('ip-input').value = d.ip;
+      prefilled = true;
+    }
+    if (d.phase === 'connected') { overlay.hidden = true; return; }
+    overlay.hidden = false;
+    if (d.phase === 'connecting') {
+      $('connect-btn').disabled = true;
+      msg.textContent = '正在发现并连接打印机…';
+      msg.className = 'busy';
+    } else {
+      $('connect-btn').disabled = false;
+      if (d.phase === 'error' && d.error) { msg.textContent = d.error; msg.className = 'err'; }
+    }
+  }
+
   async function poll() {
     try {
       const d = await (await fetch('/api/status')).json();
       const s = d.status || {};
+      updateOverlay(d);
       $('conn-dot').classList.toggle('on', d.connected);
-      $('printer-id').textContent = d.ip + ' · ' + d.serial;
+      $('printer-id').textContent = (d.ip && d.serial) ? d.ip + ' · ' + d.serial : '';
       $('nozzle-t').textContent = fmt(s.nozzle_temper);
       $('nozzle-t').classList.toggle('hot', (s.nozzle_temper || 0) > 50);
       $('nozzle-tt').textContent = Math.round(s.nozzle_target_temper || 0);
