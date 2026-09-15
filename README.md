@@ -28,10 +28,30 @@ Bambu A1 没有 USB Type-B 串口,不能像 Marlin 打印机那样用 Pronterfac
 
 ```bash
 pip install "paho-mqtt>=2.0"
+```
+
+**方式一:命令行控制台**(最像 Pronterface 的串口终端)
+
+```bash
 python bambu_console.py --ip 192.168.1.50 --serial 039XXXXXXXXXXXX --code 12345678
 ```
 
 进入 `gcode>` 提示符后逐行输入即可。内置命令:`status`(看温度/状态)、`help`、`exit`。
+
+**方式二:网页控制台**(课堂投影推荐,带 Jog 按钮)
+
+```bash
+python bambu_web.py --ip 192.168.1.50 --serial 039XXXXXXXXXXXX --code 12345678
+```
+
+然后浏览器打开 <http://127.0.0.1:8347>:
+
+- **Jog 面板**:X/Y/Z 方向键 + 归零,步进 0.1/1/10/50 mm 可选
+- **温度卡片**:喷嘴/热床实时温度 + 一键预设(150/200/220 等)
+- **G-code 控制台**:逐行输入,每条显示 `ok`/`FAILED` 回执,↑↓ 翻历史
+- 状态栏实时显示打印机状态和 WiFi 信号
+
+加 `--host 0.0.0.0` 可以让同一局域网里的学生用手机/平板访问(注意:谁都能控制,下课记得关)。
 
 ## 课堂演示参考序列
 

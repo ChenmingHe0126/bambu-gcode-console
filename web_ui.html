@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bambu A1 控制台</title>
+<style>
+  :root {
+    --bg: #0e1216;
+    --card: #161d24;
+    --card-2: #1d252e;
+    --line: #26313b;
+    --text: #e8eef4;
+    --muted: #93a1ad;
+    --accent: #00c257;
+    --accent-press: #00a94b;
+    --accent-soft: rgba(0, 194, 87, .12);
+    --red: #ff6969;
+    --amber: #ffb454;
+    --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    padding: 20px clamp(14px, 3vw, 36px) 40px;
+  }
+
+  /* ── 顶栏 ── */
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 18px;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #55636e; flex: none;
+         box-shadow: 0 0 0 4px rgba(85,99,110,.15); transition: .3s; }
+  .dot.on { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), 0 0 12px rgba(0,194,87,.6); }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: .2px; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
+  .chips { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .chip {
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 14px; font-size: 13px; color: var(--muted);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  #state-chip.printing { border-color: var(--accent); color: var(--accent); }
+
+  /* ── 卡片布局 ── */
+  .grid { display: grid; gap: 16px; grid-template-columns: minmax(340px, 420px) 1fr; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .col { display: grid; gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px 20px 20px;
+  }
+  .card h2 {
+    font-size: 12px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 14px;
+  }
+
+  /* ── Jog ── */
+  .jog-wrap { display: flex; gap: 22px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
+  .pad { display: grid; grid-template-columns: repeat(3, 62px); grid-auto-rows: 62px; gap: 8px; }
+  .zpad { display: grid; grid-template-columns: 62px; grid-auto-rows: 62px; gap: 8px; }
+  .axis-label { text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; letter-spacing: .1em; }
+  button {
+    font: inherit; color: var(--text); cursor: pointer;
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 12px;
+    transition: background .12s, transform .05s, border-color .12s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:hover { background: #242e38; border-color: #33414d; }
+  button:active { transform: scale(.96); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .jog-btn { font-size: 17px; font-weight: 650; }
+  .jog-btn span { display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: -2px; }
+  .home-btn { font-size: 22px; background: var(--accent-soft); border-color: rgba(0,194,87,.35); }
+  .home-btn:hover { background: rgba(0,194,87,.2); border-color: var(--accent); }
+
+  .step-row { display: flex; gap: 8px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
+  .step-row .lbl { color: var(--muted); font-size: 13px; align-self: center; margin-right: 2px; }
+  .seg {
+    padding: 6px 16px; border-radius: 999px; font-size: 14px; font-variant-numeric: tabular-nums;
+  }
+  .seg.active { background: var(--accent); border-color: var(--accent); color: #04140a; font-weight: 700; }
+  .hint { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: 14px; }
+  .hint b { color: var(--amber); font-weight: 600; }
+
+  /* ── 温度 ── */
+  .temp-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 10px 0; }
+  .temp-row + .temp-row { border-top: 1px dashed var(--line); }
+  .temp-name { width: 52px; color: var(--muted); font-size: 14px; }
+  .temp-val { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+  .temp-val.hot { color: var(--amber); }
+  .temp-target { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .temp-btns { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+  .temp-btns button { padding: 5px 13px; border-radius: 999px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  .temp-btns .off { color: var(--red); }
+
+  /* ── 控制台 ── */
+  #log {
+    background: #0a0e12; border: 1px solid var(--line); border-radius: 12px;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
+    height: 300px; overflow-y: auto; padding: 12px 14px; white-space: pre-wrap; word-break: break-all;
+  }
+  #log .tx { color: #79c0ff; }
+  #log .ok { color: var(--accent); }
+  #log .err { color: var(--red); }
+  #log .sys { color: var(--muted); }
+  .send-row { display: flex; gap: 10px; margin-top: 12px; }
+  #gcode-input {
+    flex: 1; font-family: var(--mono); font-size: 14.5px; color: var(--text);
+    background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px;
+    outline: none; transition: border-color .15s;
+  }
+  #gcode-input:focus { border-color: var(--accent); }
+  #send-btn {
+    padding: 0 26px; border-radius: 12px; font-weight: 700; font-size: 15px;
+    background: var(--accent); border-color: var(--accent); color: #04140a;
+  }
+  #send-btn:hover { background: var(--accent-press); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="conn-dot"></div>
+  <h1>Bambu A1 控制台<small id="printer-id"></small></h1>
+  <div class="chips">
+    <div class="chip" id="state-chip">状态 <b id="state">—</b></div>
+    <div class="chip">WiFi <b id="wifi">—</b></div>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="col">
+    <div class="card">
+      <h2>移动 · Jog</h2>
+      <div class="jog-wrap">
+        <div>
+          <div class="pad">
+            <div></div>
+            <button class="jog-btn" onclick="jog('Y', 1)">Y+<span>后</span></button>
+            <div></div>
+            <button class="jog-btn" onclick="jog('X', -1)">X−<span>左</span></button>
+            <button class="home-btn" onclick="home()" title="G28 全部归零">⌂</button>
+            <button class="jog-btn" onclick="jog('X', 1)">X+<span>右</span></button>
+            <div></div>
+            <button class="jog-btn" onclick="jog('Y', -1)">Y−<span>前</span></button>
+            <div></div>
+          </div>
+          <div class="axis-label">X / Y</div>
+        </div>
+        <div>
+          <div class="zpad">
+            <button class="jog-btn" onclick="jog('Z', 1)">Z+<span>升</span></button>
+            <button class="jog-btn" onclick="jog('Z', -1)">Z−<span>降</span></button>
+          </div>
+          <div class="axis-label">Z</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="lbl">步进</span>
+        <button class="seg" data-step="0.1" onclick="setStep(this)">0.1</button>
+        <button class="seg" data-step="1" onclick="setStep(this)">1</button>
+        <button class="seg active" data-step="10" onclick="setStep(this)">10</button>
+        <button class="seg" data-step="50" onclick="setStep(this)">50</button>
+        <span class="lbl">mm</span>
+      </div>
+      <div class="hint"><b>先按 ⌂ 归零</b>再移动;XY 6000 mm/min,Z 1200 mm/min</div>
+    </div>
+
+    <div class="card">
+      <h2>温度</h2>
+      <div class="temp-row">
+        <span class="temp-name">喷嘴</span>
+        <span class="temp-val" id="nozzle-t">—</span>
+        <span class="temp-target">/ <span id="nozzle-tt">0</span>°C</span>
+        <div class="temp-btns">
+          <button class="off" onclick="g('M104 S0')">关</button>
+          <button onclick="g('M104 S150')">150</button>
+          <button onclick="g('M104 S200')">200</button>
+          <button onclick="g('M104 S220')">220</button>
+        </div>
+      </div>
+      <div class="temp-row">
+        <span class="temp-name">热床</span>
+        <span class="temp-val" id="bed-t">—</span>
+        <span class="temp-target">/ <span id="bed-tt">0</span>°C</span>
+        <div class="temp-btns">
+          <button class="off" onclick="g('M140 S0')">关</button>
+          <button onclick="g('M140 S45')">45</button>
+          <button onclick="g('M140 S60')">60</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>G-code 控制台</h2>
+    <div id="log"></div>
+    <div class="send-row">
+      <input id="gcode-input" placeholder="输入 G-code,回车发送 — 如 G28 / G1 X128 Y128 F6000"
+             autocomplete="off" spellcheck="false">
+      <button id="send-btn" onclick="sendInput()">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let step = 10;
+  const $ = id => document.getElementById(id);
+  const logEl = $('log');
+  const history = [];
+  let histPos = -1;
+
+  function addLog(text, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = text;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  async function sendGcode(gcode, label) {
+    addLog('>> ' + (label || gcode.replace(/\n/g, ' | ')), 'tx');
+    try {
+      const r = await fetch('/api/gcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gcode }),
+      });
+      const d = await r.json();
+      if (d.result === 'success') addLog('<< ok', 'ok');
+      else addLog('<< ' + d.result + (d.reason ? ' — ' + d.reason : ''), 'err');
+    } catch (e) {
+      addLog('<< 网络错误: ' + e.message, 'err');
+    }
+  }
+  const g = sendGcode;
+
+  function jog(axis, dir) {
+    const feed = axis === 'Z' ? 1200 : 6000;
+    const dist = (dir * step).toFixed(1).replace(/\.0$/, '');
+    sendGcode(`G91\nG1 ${axis}${dist} F${feed}\nG90`, `jog ${axis}${dir > 0 ? '+' : '−'}${step}mm`);
+  }
+  function home() { sendGcode('G28', 'G28(全部归零)'); }
+
+  function setStep(btn) {
+    step = parseFloat(btn.dataset.step);
+    document.querySelectorAll('.seg').forEach(b => b.classList.toggle('active', b === btn));
+  }
+
+  function sendInput() {
+    const input = $('gcode-input');
+    const v = input.value.trim();
+    if (!v) return;
+    history.push(v); histPos = history.length;
+    sendGcode(v);
+    input.value = '';
+    input.focus();
+  }
+  $('gcode-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') sendInput();
+    else if (e.key === 'ArrowUp' && histPos > 0) { $('gcode-input').value = history[--histPos]; e.preventDefault(); }
+    else if (e.key === 'ArrowDown') {
+      if (histPos < history.length - 1) $('gcode-input').value = history[++histPos];
+      else { histPos = history.length; $('gcode-input').value = ''; }
+      e.preventDefault();
+    }
+  });
+
+  const fmt = v => (v === undefined || v === null) ? '—' : Number(v).toFixed(1) + '°';
+  async function poll() {
+    try {
+      const d = await (await fetch('/api/status')).json();
+      const s = d.status || {};
+      $('conn-dot').classList.toggle('on', d.connected);
+      $('printer-id').textContent = d.ip + ' · ' + d.serial;
+      $('nozzle-t').textContent = fmt(s.nozzle_temper);
+      $('nozzle-t').classList.toggle('hot', (s.nozzle_temper || 0) > 50);
+      $('nozzle-tt').textContent = Math.round(s.nozzle_target_temper || 0);
+      $('bed-t').textContent = fmt(s.bed_temper);
+      $('bed-t').classList.toggle('hot', (s.bed_temper || 0) > 45);
+      $('bed-tt').textContent = Math.round(s.bed_target_temper || 0);
+      $('state').textContent = s.gcode_state || '—';
+      $('state-chip').classList.toggle('printing', s.gcode_state === 'RUNNING');
+      $('wifi').textContent = s.wifi_signal || '—';
+    } catch (e) {
+      $('conn-dot').classList.remove('on');
+    }
+  }
+  addLog('· 网页控制台就绪 — 移动前请先归零 (⌂ 或 G28)', 'sys');
+  poll();
+  setInterval(poll, 1000);
+</script>
+</body>
+</html>
