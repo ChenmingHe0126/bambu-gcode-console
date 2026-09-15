@@ -268,8 +268,8 @@
   <div class="col">
   <div class="card">
     <h2>G-code File</h2>
-    <div id="drop-zone">Drop a .gcode file here, or click to browse</div>
-    <input type="file" id="file-input" accept=".gcode,.gco,.g,.nc,.txt" hidden>
+    <div id="drop-zone">Drop a .gcode / .gcode.3mf file here, or click to browse</div>
+    <input type="file" id="file-input" accept=".gcode,.gco,.g,.nc,.txt,.3mf" hidden>
     <div id="file-info" hidden>
       <div class="file-meta"><b id="file-name"></b><span class="muted" id="file-stats"></span></div>
       <div class="warn" id="file-warn" hidden>
@@ -289,14 +289,14 @@
         <div class="progress"><div id="job-bar"></div></div>
         <span class="lbl" id="job-label"></span>
       </div>
-      <div class="sec-label">Or upload to SD card, then start it on the printer screen</div>
-      <div class="ctl-row">
-        <button class="primary" id="sd-upload" onclick="uploadToSd()">⬆ Upload to SD</button>
-        <label class="lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="auto-sd" checked> auto-upload when a file is loaded
-        </label>
-        <span class="lbl" id="sd-msg"></span>
-      </div>
+    </div>
+    <div class="sec-label">Send to SD card (unmodified — start it on the printer screen)</div>
+    <div class="ctl-row">
+      <button class="primary" id="sd-upload" onclick="uploadToSd()">⬆ Send to SD</button>
+      <label class="lbl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="auto-sd" checked> send automatically when a file is loaded
+      </label>
+      <span class="lbl" id="sd-msg"></span>
     </div>
     <div class="sec-label">SD card files</div>
     <div class="ctl-row">
@@ -404,7 +404,7 @@
   });
 
   // ── G-code file: load, parse, preview, stream, SD ──
-  let model = null, fileText = '', fileName = '';
+  let model = null, fileText = '', fileName = '', fileB64 = '';
   let selLayer = -1;            // -1 = all layers
   let lastProgress = -1, lastJobState = 'idle', sdBusy = false, isConnected = false;
   try { if (localStorage.getItem('autoSd') === '0') $('auto-sd').checked = false; } catch (e) {}
@@ -424,10 +424,31 @@
     if (e.target.files.length) readFile(e.target.files[0]);
   });
 
+  function bufToB64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+
   function readFile(f) {
     const r = new FileReader();
-    r.onload = () => loadText(f.name, r.result);
-    r.readAsText(f);
+    r.onload = () => {
+      fileName = f.name;
+      fileB64 = bufToB64(r.result);
+      if (/\.(gcode|gco|g|nc|txt)$/i.test(f.name)) {
+        loadText(f.name, new TextDecoder().decode(r.result));
+      } else {
+        // 二进制(如 Bambu Studio 导出的 .gcode.3mf):不预览,原样送 SD
+        fileText = ''; model = null;
+        $('file-info').hidden = true;
+        addLog('· Loaded ' + f.name + ' (binary — no preview, send-to-SD only)', 'sys');
+        if ($('auto-sd').checked && isConnected) uploadToSd();
+        else $('sd-msg').textContent = f.name + ' ready — press Send to SD';
+      }
+    };
+    r.readAsArrayBuffer(f);
   }
 
   function parseGcode(text) {
@@ -491,6 +512,7 @@
 
   function loadText(name, text) {
     fileName = name; fileText = text;
+    fileB64 = bufToB64(new TextEncoder().encode(text).buffer);
     model = parseGcode(text);
     selLayer = -1;
     $('file-info').hidden = false;
@@ -566,19 +588,17 @@
   async function stopJob() { await post('/api/job/stop'); }
 
   async function uploadToSd() {
-    if (!fileText || sdBusy) return;
+    if (!fileB64 || sdBusy) return;
     sdBusy = true;
-    $('sd-msg').textContent = 'Uploading…';
-    let thumbnail = '';
-    try { thumbnail = $('preview').toDataURL('image/png'); } catch (e) {}
-    const r = await post('/api/sd/upload', { filename: fileName, gcode: fileText, thumbnail });
+    $('sd-msg').textContent = 'Sending ' + fileName + ' to SD…';
+    const r = await post('/api/sd/upload', { filename: fileName, data: fileB64 });
     sdBusy = false;
     if (r.ok) {
       $('sd-msg').textContent = 'On SD as ' + r.name + ' — start it on the printer screen';
-      addLog('· Uploaded to SD: ' + r.name, 'sys');
+      addLog('· Sent to SD: ' + r.name, 'sys');
       refreshSd(r.name);
     } else {
-      $('sd-msg').textContent = r.error || 'upload failed';
+      $('sd-msg').textContent = r.error || 'send failed';
     }
   }
   async function refreshSd(selectName) {

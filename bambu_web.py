@@ -16,7 +16,6 @@ bambu_web.py — Bambu Lab A1 网页控制台(本机 HTTP → 打印机 MQTT 桥
 import argparse
 import base64
 import ftplib
-import hashlib
 import io
 import json
 import re
@@ -25,7 +24,6 @@ import sys
 import threading
 import time
 import webbrowser
-import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -70,152 +68,8 @@ def _ftps_session(ip, code, timeout=10):
     return ftps
 
 
-BAMBU_GCODE_HEADER = (
-    "; HEADER_BLOCK_START\n"
-    "; BambuStudio 02.00.03.54\n"
-    "; model printer: Bambu Lab A1 0.4 nozzle\n"
-    "; total layer number: 1\n"
-    "; HEADER_BLOCK_END\n"
-    "\n"
-    "; CONFIG_BLOCK_START\n"
-    "; printer_model = Bambu Lab A1\n"
-    "; nozzle_diameter = 0.4\n"
-    "; curr_bed_type = Textured PEI Plate\n"
-    "; CONFIG_BLOCK_END\n"
-    "\n"
-    "; EXECUTABLE_BLOCK_START\n"
-)
-
-
-# 以下静态文件抄自 Bambu Studio 导出的 .gcode.3mf 结构(机型改为 A1/N2S)。
-# 打印机屏幕靠这些元数据识别文件、显示缩略图并允许启动打印。
-_CONTENT_TYPES = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
-    ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
-    ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
-    ' <Default Extension="png" ContentType="image/png"/>\n'
-    ' <Default Extension="gcode" ContentType="text/x.gcode"/>\n'
-    '</Types>'
-)
-_RELS = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
-    ' <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
-    ' <Relationship Target="/Metadata/plate_1.png" Id="rel-2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>\n'
-    ' <Relationship Target="/Metadata/plate_1.png" Id="rel-4" Type="http://schemas.bambulab.com/package/2021/cover-thumbnail-middle"/>\n'
-    ' <Relationship Target="/Metadata/plate_1_small.png" Id="rel-5" Type="http://schemas.bambulab.com/package/2021/cover-thumbnail-small"/>\n'
-    '</Relationships>'
-)
-_MODEL = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
-    '<model unit="millimeter" xml:lang="en-US" '
-    'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
-    'xmlns:BambuStudio="http://schemas.bambulab.com/package/2021" '
-    'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">\n'
-    ' <metadata name="Application">BambuStudio-02.08.02.61</metadata>\n'
-    ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
-    ' <metadata name="Thumbnail_Middle">/Metadata/plate_1.png</metadata>\n'
-    ' <metadata name="Thumbnail_Small">/Metadata/plate_1_small.png</metadata>\n'
-    ' <resources>\n </resources>\n <build/>\n</model>'
-)
-_MODEL_SETTINGS = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
-    '<config>\n  <plate>\n'
-    '    <metadata key="plater_id" value="1"/>\n'
-    '    <metadata key="plater_name" value=""/>\n'
-    '    <metadata key="locked" value="false"/>\n'
-    '    <metadata key="gcode_file" value="Metadata/plate_1.gcode"/>\n'
-    '    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>\n'
-    '    <metadata key="thumbnail_no_light_file" value="Metadata/plate_no_light_1.png"/>\n'
-    '    <metadata key="top_file" value="Metadata/top_1.png"/>\n'
-    '    <metadata key="pick_file" value="Metadata/pick_1.png"/>\n'
-    '    <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>\n'
-    '  </plate>\n</config>\n'
-)
-_MODEL_SETTINGS_RELS = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
-    ' <Relationship Target="/Metadata/plate_1.gcode" Id="rel-1" Type="http://schemas.bambulab.com/package/2021/gcode"/>\n'
-    '</Relationships>'
-)
-_PLATE_JSON = json.dumps({
-    "bbox_all": [0, 0, 256, 256], "bbox_objects": [],
-    "bed_type": "textured_plate", "filament_colors": ["#00C257"],
-    "filament_ids": [0], "first_extruder": 0, "first_layer_time": 1.0,
-    "is_seq_print": False, "nozzle_diameter": 0.4, "version": 2,
-})
-_FILAMENT_SEQ = '{"plate_1":{"nozzle_sequence":[0],"optimal_assignment":[0],"sequence":[1]}}'
-_CUT_INFO = ('<?xml version="1.0" encoding="utf-8"?>\n<objects>\n <object id="1">\n'
-             '  <cut_id id="0" check_sum="1" connectors_cnt="0"/>\n </object>\n</objects>\n')
-# 1x1 深灰 PNG,前端没给缩略图时兜底
-_FALLBACK_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
-
-
-def _slice_info(job_name):
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<config>\n  <header>\n'
-        '    <header_item key="X-BBL-Client-Type" value="slicer"/>\n'
-        '    <header_item key="X-BBL-Client-Version" value="02.08.02.61"/>\n'
-        '  </header>\n  <plate>\n'
-        '    <metadata key="index" value="1"/>\n'
-        '    <metadata key="extruder_type" value="0"/>\n'
-        '    <metadata key="nozzle_volume_type" value="0"/>\n'
-        '    <metadata key="printer_model_id" value="N2S"/>\n'
-        '    <metadata key="nozzle_diameters" value="0.4"/>\n'
-        '    <metadata key="timelapse_type" value="0"/>\n'
-        '    <metadata key="prediction" value="60"/>\n'
-        '    <metadata key="weight" value="0.10"/>\n'
-        '    <metadata key="pause_count" value="0"/>\n'
-        '    <metadata key="first_layer_time" value="1.0"/>\n'
-        '    <metadata key="outside" value="false"/>\n'
-        '    <metadata key="support_used" value="false"/>\n'
-        '    <metadata key="label_object_enabled" value="false"/>\n'
-        f'    <object identify_id="1" name="{job_name}" skipped="false" />\n'
-        '    <filament id="1" tray_info_idx="GFA00" type="PLA" color="#00C257" '
-        'used_m="0.01" used_g="0.10" nozzle_diameter="0.40"/>\n'
-        '  </plate>\n</config>\n'
-    )
-
-
-def make_3mf(gcode_text, job_name="demo", thumb_png=None):
-    """把 gcode 包成 Bambu Studio 风格的完整 .gcode.3mf。
-
-    结构照抄 Studio 导出文件(机型 A1/N2S、耗材标 PLA):打印机屏幕能
-    列出、显示缩略图并启动。gcode 需要 HEADER/CONFIG/EXECUTABLE 三段
-    护栏注释,没有就自动补;md5 附属文件为大写十六进制、无换行。
-    """
-    if "HEADER_BLOCK_START" not in gcode_text:
-        gcode_text = (BAMBU_GCODE_HEADER + gcode_text.rstrip("\n")
-                      + "\n; EXECUTABLE_BLOCK_END\n")
-    gcode_bytes = gcode_text.encode("utf-8")
-    md5 = hashlib.md5(gcode_bytes).hexdigest().upper()
-    png = thumb_png or _FALLBACK_PNG
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", _CONTENT_TYPES)
-        z.writestr("_rels/.rels", _RELS)
-        z.writestr("3D/3dmodel.model", _MODEL)
-        z.writestr("Metadata/plate_1.png", png)
-        z.writestr("Metadata/plate_1_small.png", png)
-        z.writestr("Metadata/plate_no_light_1.png", png)
-        z.writestr("Metadata/top_1.png", png)
-        z.writestr("Metadata/pick_1.png", png)
-        z.writestr("Metadata/plate_1.json", _PLATE_JSON)
-        z.writestr("Metadata/model_settings.config", _MODEL_SETTINGS)
-        z.writestr("Metadata/_rels/model_settings.config.rels", _MODEL_SETTINGS_RELS)
-        z.writestr("Metadata/slice_info.config", _slice_info(job_name))
-        z.writestr("Metadata/filament_sequence.json", _FILAMENT_SEQ)
-        z.writestr("Metadata/cut_information.xml", _CUT_INFO)
-        z.writestr("Metadata/plate_1.gcode", gcode_bytes)
-        z.writestr("Metadata/plate_1.gcode.md5", md5)
-    return buf.getvalue()
-
-
 def sd_upload(ip, code, name, data):
-    """上传 .3mf。个别固件在数据传完后 226 响应超时——重连核对大小兜底。"""
+    """把文件原样上传到 SD 卡根目录。个别固件在数据传完后 226 响应超时——重连核对大小兜底。"""
     try:
         ftps = _ftps_session(ip, code, timeout=20)
         try:
@@ -260,13 +114,14 @@ def sd_list(ip, code):
             ftps.quit()
         except Exception:
             ftps.close()
-    return sorted(n.lstrip("/") for n in names if n.lower().endswith(".3mf"))
+    return sorted(n.lstrip("/") for n in names
+                  if n.lower().endswith((".3mf", ".gcode", ".gco")) and not n.startswith("._"))
 
 
-def safe_3mf_name(filename):
-    stem = Path(filename).stem
-    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_") or "demo"
-    return stem[:60] + ".gcode.3mf"
+def safe_sd_name(filename):
+    """保留原文件名(含扩展名),只清洗掉路径分隔符和奇怪字符。"""
+    name = re.sub(r"[^A-Za-z0-9_.\-]+", "_", Path(filename).name).strip("._") or "file.gcode"
+    return name[:100]
 
 
 class BambuLink:
@@ -640,31 +495,24 @@ def make_handler(app: App, html_path: Path):
                 app.job.stop()
                 self._json({"ok": True})
             elif self.path == "/api/sd/upload":
+                # 文件原样(base64)上传到 SD 卡,不做任何包装或改写
                 try:
                     data = self._body()
-                    text = str(data.get("gcode", ""))
-                    filename = str(data.get("filename", "demo.gcode"))
-                    thumb_b64 = str(data.get("thumbnail", ""))
-                except (ValueError, json.JSONDecodeError):
+                    filename = str(data.get("filename", "file.gcode"))
+                    raw = base64.b64decode(str(data.get("data", "")).split(",", 1)[-1])
+                except (ValueError, json.JSONDecodeError, base64.binascii.Error):
                     self._json({"error": "bad request"}, 400)
                     return
-                if not text.strip():
+                if not raw:
                     self._json({"ok": False, "error": "file is empty"})
                     return
-                thumb = None
-                if thumb_b64:
-                    try:
-                        thumb = base64.b64decode(thumb_b64.split(",", 1)[-1])
-                        if len(thumb) > 2_000_000:
-                            thumb = None
-                    except (ValueError, base64.binascii.Error):
-                        thumb = None
+                if len(raw) > 200_000_000:
+                    self._json({"ok": False, "error": "file too large (200 MB max)"})
+                    return
                 cfg = load_cache()
-                name = safe_3mf_name(filename)
-                job_name = name[:-len(".gcode.3mf")] if name.endswith(".gcode.3mf") else name
+                name = safe_sd_name(filename)
                 try:
-                    sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name,
-                              make_3mf(text, job_name=job_name, thumb_png=thumb))
+                    sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name, raw)
                     self._json({"ok": True, "name": name})
                 except Exception as e:
                     self._json({"ok": False, "error": f"FTP upload failed: {e}"})
@@ -691,8 +539,8 @@ def make_handler(app: App, html_path: Path):
                 except (ValueError, json.JSONDecodeError):
                     self._json({"error": "bad request"}, 400)
                     return
-                if not name.lower().endswith(".3mf") or "/" in name or "\\" in name:
-                    self._json({"ok": False, "error": "not a .3mf file"})
+                if not name.lower().endswith((".3mf", ".gcode", ".gco")) or "/" in name or "\\" in name:
+                    self._json({"ok": False, "error": "not a printable file"})
                     return
                 cfg = load_cache()
                 try:
