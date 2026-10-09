@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-bambu_discovery.py — 自动定位局域网里的 Bambu 打印机。
+bambu_discovery.py - locate a Bambu printer on the LAN.
 
-三级回退链(resolve):
-  1. 显式传入的 --ip:先 TCP 探测 8883 端口,通了直接用
-  2. 上次成功连接的缓存地址(~/.bambu-gcode-console.json)
-  3. SSDP 被动监听:打印机每隔几秒向 UDP 1990/2021 广播一条 NOTIFY,
-     带 IP(Location)、序列号(USN)、机型(DevModel.bambu.com)和设备名
+Three-step fallback chain (resolve):
+  1. an explicit --ip: probe TCP port 8883 first, use it if reachable
+  2. the address that worked last time (~/.bambu-gcode-console.json)
+  3. passive SSDP: the printer broadcasts a NOTIFY on UDP 1990/2021 every few seconds
+     carrying its IP (Location), serial (USN), model (DevModel.bambu.com) and name
 
-注意:企业/校园 WiFi 常过滤客户端间广播,Windows 防火墙在 Public 网络下也会
-拦入站 UDP——所以 SSDP 放在最后,平时靠缓存就够了。
+Note: office/campus Wi-Fi often filters client-to-client broadcasts and the Windows
+firewall blocks inbound UDP on "Public" networks, so SSDP comes last; the cache is
+what makes everyday use instant.
 """
 
 import json
@@ -23,7 +24,7 @@ SSDP_PORTS = (2021, 1990)
 
 
 def probe(ip, port=8883, timeout=1.5):
-    """TCP 探测打印机的 MQTT 端口是否可达。"""
+    """Probe whether the printer's MQTT port is reachable over TCP."""
     try:
         with socket.create_connection((ip, port), timeout=timeout):
             return True
@@ -39,17 +40,17 @@ def load_cache():
 
 
 def save_cache(info):
-    """合并写入(文件同时存着访问码等其他字段,别整个覆盖)。"""
+    """Merge-write: the file also holds the access code and other fields, never overwrite it wholesale."""
     try:
         merged = load_cache()
         merged.update({k: v for k, v in info.items() if v})
         CACHE_FILE.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
     except OSError:
-        pass  # 缓存写不进去不致命
+        pass  # failing to write the cache is not fatal
 
 
 def discover(timeout=20.0):
-    """被动监听 SSDP 广播;返回 {"ip","serial","model","name"} 或 None。"""
+    """Listen passively for the SSDP broadcast; return {"ip","serial","model","name"} or None."""
     socks = []
     for port in SSDP_PORTS:
         try:
@@ -59,7 +60,7 @@ def discover(timeout=20.0):
             s.setblocking(False)
             socks.append(s)
         except OSError:
-            continue  # 被 Bambu Studio/OrcaSlicer 占用就跳过这个端口
+            continue  # port taken by Bambu Studio/OrcaSlicer - skip it
     if not socks:
         print("[SSDP] cannot listen on ports 1990/2021 (Bambu Studio/OrcaSlicer running?)")
         return None
@@ -98,7 +99,7 @@ def _parse(txt, sender_ip):
 
 
 def resolve(ip=None, serial=None):
-    """按 显式参数 → 缓存 → SSDP 的顺序确定打印机;返回 info dict 或 None。"""
+    """Resolve the printer in the order explicit args -> cache -> SSDP; return an info dict or None."""
     cache = load_cache()
     serial = serial or cache.get("serial", "")
 

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-bambu_console.py — 在 Bambu Lab A1 上逐行发送 G-code 的迷你控制台(Pronterface 风格)。
+bambu_console.py - minimal line-by-line G-code console for Bambu Lab printers (Pronterface style).
 
-用法:
+Usage:
     pip install "paho-mqtt>=2.0"
-    python bambu_console.py --ip 192.168.x.x --serial <打印机序列号> --code <访问码>
+    python bambu_console.py [--ip 192.168.x.x] [--serial SN] [--code ACCESS_CODE]
 
-前提(在打印机屏幕上设置,详见 README):
-  1. 设置 -> 网络:开启「仅局域网模式 (LAN-only Mode)」,首次开启后重启打印机
-  2. 同一菜单里开启「开发者模式 (Developer Mode)」——固件 01.05.00.00+ 必须开,
-     否则打印机会拒绝一切控制指令(只读状态不受影响)
-  3. 访问码显示在 LAN-only 模式页面上;序列号在 设置 -> 设备信息 或机身贴纸上
+Prerequisites (set on the printer's touchscreen, see README):
+  1. Settings -> Network: enable LAN-only Mode, then restart the printer once
+  2. In the same menu enable Developer Mode - required on firmware 01.05.00.00+,
+     otherwise the printer rejects every control command (read-only status still works)
+  3. The access code is shown on the LAN-only Mode page; the serial is under Settings -> Device
 
-协议(见 OpenBambuAPI 文档):MQTT over TLS, 端口 8883, 用户名 bblp, 密码 = 访问码。
-  发送: device/{serial}/request  {"print": {"command": "gcode_line", "sequence_id": "N", "param": "G28\n"}}
-  接收: device/{serial}/report   打印机会回一条带同样 sequence_id 的 result(表示"已接受",
-        不代表动作执行完毕),并周期性推送温度/状态 JSON。
+Protocol (see the OpenBambuAPI docs): MQTT over TLS, port 8883, user bblp, password = access code.
+  publish:   device/{serial}/request   {"print": {"command": "gcode_line", "sequence_id": "N", "param": "G28" + newline}}
+  subscribe: device/{serial}/report    the printer echoes the command with a result ("accepted",
+             not "finished") and pushes temperature/state JSON periodically.
 """
 
 import argparse
@@ -29,7 +29,7 @@ import paho.mqtt.client as mqtt
 from bambu_discovery import load_cache, resolve, save_cache
 
 seq = 0
-last_status = {}  # 最近一次 report 里关心的字段缓存
+last_status = {}  # fields of interest from the latest status report
 
 
 def next_seq():
@@ -48,9 +48,9 @@ STATUS_KEYS = (
 def make_client(args):
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
     client.username_pw_set("bblp", args.code)
-    # 打印机证书由 Bambu 私有 CA 签发,公网 CA 无法验证。
-    # 课堂局域网环境下直接跳过校验;如需严格校验,可改为固定信任
-    # OpenBambuAPI 仓库里的 ca_cert.pem(见 README)。
+    # The printer's certificate is signed by Bambu's private CA, so public CAs can't verify it.
+    # On a classroom LAN we skip verification; for strict checking, trust the ca_cert.pem
+    # from the OpenBambuAPI repository instead (see README).
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -60,7 +60,7 @@ def make_client(args):
         if rc == 0:
             print(f"[connected to {args.ip}] subscribing to status reports…")
             c.subscribe(f"device/{args.serial}/report")
-            # 请求一次全量状态,拿到初始温度等
+            # request one full status push, to get initial temperatures etc.
             c.publish(
                 f"device/{args.serial}/request",
                 json.dumps({"pushing": {"sequence_id": next_seq(), "command": "pushall"}}),
@@ -74,13 +74,13 @@ def make_client(args):
         except json.JSONDecodeError:
             return
         p = data.get("print", {})
-        # G-code 指令的受理回执(类似串口的 "ok" / "error")
+        # acknowledgement of a G-code command (like the serial "ok" / "error")
         if p.get("command") == "gcode_line":
             result = str(p.get("result", "?")).lower()
             reason = p.get("reason") or ""
             tag = "ok" if result == "success" else f"FAILED {reason}".strip()
             print(f"  << [{p.get('sequence_id')}] {tag}")
-        # 缓存状态字段,供 status 命令查看
+        # cache status fields for the status command
         for k in STATUS_KEYS:
             if k in p:
                 last_status[k] = p[k]
@@ -125,7 +125,7 @@ Note: gcode_line only acks acceptance — query commands like M114 return no
 
 
 def main():
-    # Windows 控制台默认 cp1252/GBK,中文输出会炸;强制 UTF-8
+    # Windows consoles default to cp1252/GBK, which breaks non-ASCII output; force UTF-8
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")

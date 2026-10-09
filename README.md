@@ -1,106 +1,172 @@
-# bambu-gcode-console
+# Bambu G-code Console
 
-给 Bambu Lab A1(及其他 Bambu 打印机)**逐行发送 G-code** 的极简命令行控制台,用于课堂演示 —— 类似 Printrun/Pronterface 里"一句一句执行 G-code"的体验。
+A small, Printrun-style control panel for Bambu Lab printers, made for **teaching**: jog the head, set temperatures, type G-code one line at a time and watch the machine do exactly that line, preview a G-code file, stream it line by line, or send it to the printer's SD card and start it with one click.
 
-A minimal Pronterface-style line-by-line G-code console for Bambu Lab printers over LAN MQTT, made for classroom demos.
+- Tested on a **Bambu Lab A1**, firmware 01.08.01.00 (October 2026). Other Bambu printers speak the same protocol but are untested.
+- Runs on Windows, macOS and Linux. Needs Python 3.9+ and one library (`paho-mqtt`).
+- Inspired by [Printrun / Pronterface](https://github.com/kliment/Printrun). Not affiliated with Bambu Lab.
+- Written with [Claude Code](https://claude.com/claude-code) (agentic coding) by Chenming He for a university 3D-printing workshop. MIT license.
 
-## 背景
+[中文说明 → README.zh-CN.md](README.zh-CN.md)
 
-Bambu A1 没有 USB Type-B 串口,不能像 Marlin 打印机那样用 Pronterface 直连。但它在**局域网模式**下开放了一个 MQTT 接口,支持 `gcode_line` 指令 —— 每条消息执行一行(或几行)G-code。本工具就是包了一层交互式终端的 MQTT 客户端。
+> **Safety.** This tool moves a machine with a 220 °C nozzle and a 65 °C bed. Stay next to the printer, keep hands out of the build volume, and know where the printer's power switch is. Use at your own risk; see [Disclaimer](#disclaimer).
 
-## 打印机端设置(必做)
+## Why this exists
 
-固件 01.05.00.00(2025 年 6 月)起,Bambu 加入了 Authorization Control,不开开发者模式就会拒绝一切本地控制指令。步骤:
+Older printers (Ender, Prusa, Anycubic…) have a USB port that behaves like a serial cable: a program such as Printrun can push one G-code line, get an `ok` back, push the next. That is wonderful in a classroom — students type `G1 X100` and the head moves 100 mm.
 
-1. 打印机屏幕:**设置 → 网络(WLAN)→ 开启「仅局域网模式 (LAN-only Mode)」**,首次开启后重启打印机
-2. 回到同一菜单,开启 **「开发者模式 (Developer Mode)」**
-3. 记下 LAN-only 页面显示的**访问码 (Access Code)**(如果是全 0,把 LAN-only 关了再开一次)
-4. 序列号在 **设置 → 设备信息** 或机身贴纸上;IP 在网络设置里能看到
+A Bambu A1 has no such port. What it does have, once you switch it to **LAN-only Mode** and **Developer Mode** on its touchscreen, is a small server on the local network that accepts commands over **MQTT** (a lightweight "publish a message to a topic" protocol, normally used by IoT devices) and file uploads over **FTPS** (the classic FTP file protocol wrapped in TLS encryption). This project is a thin bridge that turns those two channels back into the Printrun experience: a web page on your laptop talks to a tiny Python program, and the Python program talks to the printer.
 
-代价(上课用基本无所谓,但要知道):
+## Features
 
-- 打印机与 Bambu 云断开,**Handy App 和远程监控不可用**
-- 固件升级要用 SD 卡/U 盘离线升,或临时切回云模式
-- Bambu 官方对开发者模式不提供售后支持
-- 这两个开关会跨固件升级保留,不用每次重设
+| In the browser | What it does |
+|---|---|
+| **Jog pad** | X / Y / Z buttons with 0.1 / 1 / 10 / 50 mm steps, plus Home (`G28`). |
+| **Temperatures** | Live nozzle and bed readings, one-tap presets (150 / 200 / 220 °C nozzle, 45 / 60 °C bed) and Off. |
+| **G-code console** | Type any G-code, press Enter, see the printer's `ok` / `FAILED` reply. Arrow keys recall history. |
+| **File preview** | Drop a `.gcode` file: the XY toolpath is drawn in the page (green = extruding, grey = travel), with a layer slider. Handles `G2`/`G3` arcs and CRLF / CR / LF line endings. |
+| **Stream** | Sends the loaded file **one line at a time** and waits for each reply — the Printrun way. Pause / Stop, progress bar, and the preview highlights what has already been sent. Best for short demo files (a few hundred lines). |
+| **Print now** | Uploads the file to the SD card and starts it as a normal print, so the printer runs it at full speed by itself. Raw `.gcode` is wrapped into the format the firmware insists on (see [How printing works](#how-the-one-click-print-works)); Bambu Studio `.gcode.3mf` exports are sent as-is. |
+| **Send to SD** | Just copies the file to the SD card unchanged (on by default when a file is loaded). Start it from the printer's screen, or pick it in the SD list and press Print. |
+| **SD card files** | List, Print, Delete. Printing a raw `.gcode` from the list converts it on the fly. |
+| **Printer controls** | Pause / Resume / Stop for whatever the printer is currently printing. |
 
-## 安装与使用
+A command-line version, `bambu_console.py`, offers the same line-by-line console in a terminal for people who prefer that.
+
+## What you need
+
+1. A Bambu Lab printer on the same Wi-Fi / LAN as your computer. Tested on the A1; the A1 mini, P1 and X1 series use the same commands but have not been tried.
+2. **LAN-only Mode + Developer Mode** enabled on the printer (steps below). On firmware 01.05.00.00 and newer the printer refuses every control command without Developer Mode.
+3. Python 3.9 or newer. Windows users: install from [python.org](https://www.python.org/downloads/) and tick *Add Python to PATH*.
+4. Filament loaded and the bed levelled at least once from the printer's own menu — the example files reuse the stored levelling mesh.
+
+## Printer setup (once)
+
+1. On the touchscreen: **Settings → Network (WLAN) → LAN-only Mode → on**. The printer asks to restart; let it.
+2. Back in the same menu, turn on **Developer Mode**. (Bambu's wording: it "opens the MQTT channel, live stream and FTP" and disables command verification. Bambu does not provide support in this mode.)
+3. Write down the **Access Code** shown on the LAN-only Mode page — 8 characters. If it shows all zeros, toggle LAN-only Mode off and on again.
+4. The printer's IP address is on the same page; its serial number is under *Settings → Device*. You usually don't need either: the console finds the printer by itself.
+
+What you give up while in LAN-only Mode: the Bambu Handy app, cloud monitoring and over-the-air firmware updates (update from SD card instead). Both switches survive firmware updates.
+
+## Install and run
 
 ```bash
-pip install "paho-mqtt>=2.0"
+git clone https://github.com/ChenmingHe0126/bambu-gcode-console.git
+cd bambu-gcode-console
 ```
 
-**最省事的方式:双击 `start_console.bat`** —— 浏览器会自动打开控制台页面,访问码/IP 填一次就记住(存在 `~/.bambu-gcode-console.json`),之后每次只要点一下 Connect。关掉黑色命令行窗口即停止服务。界面为英文(英文授课用)。
+(or click **Code → Download ZIP** on GitHub and unzip it.)
 
-> 为什么不能直接双击 html?浏览器没法直接说打印机的 MQTT 协议,中间必须有个本地 Python 桥,`.bat` 就是一键把桥拉起来再开浏览器。
+- **Windows:** double-click `start_console.bat`.
+- **macOS / Linux:** double-click `start_console.sh` (macOS: right-click → Open the first time), or run `./start_console.sh` in a terminal.
 
-两个入口都支持**自动发现**:`--ip`/`--serial` 可以不填,程序按「显式参数(先探测可达)→ 上次成功的缓存地址(`~/.bambu-gcode-console.json`)→ SSDP 广播监听」的顺序自己找打印机。首次使用或换网络时建议手动传一次 `--ip`,之后就会记住。注意:校园/企业 WiFi 常过滤广播,Windows 在 Public 网络下也拦入站 UDP——SSDP 收不到时去打印机屏幕 设置→网络 查 IP 即可;Bambu Studio/OrcaSlicer 开着会占用发现端口。
+The launcher installs `paho-mqtt` if it is missing, starts the bridge on `http://127.0.0.1:8347` and opens your browser. Type the access code, press **Connect**. The code, IP and serial are remembered in `~/.bambu-gcode-console.json`, so next time it is one click.
 
-**方式一:命令行控制台**(最像 Pronterface 的串口终端)
+Closing the black terminal window stops the bridge. Only one console can run at a time (port 8347).
+
+Manual start, with options:
 
 ```bash
-python bambu_console.py --code 12345678
+python bambu_web.py --code 12345678            # first time; remembered afterwards
+python bambu_web.py --ip 192.168.1.50          # if auto-discovery can't see the printer
+python bambu_web.py --host 0.0.0.0 --port 8347 # let students' phones open the page (read the Safety note)
+python bambu_console.py                        # terminal version
 ```
 
-进入 `gcode>` 提示符后逐行输入即可。内置命令:`status`(看温度/状态)、`help`、`exit`。
+How the printer is found, in order: the `--ip` you gave (checked by probing port 8883) → the address that worked last time → listening for the printer's SSDP broadcast on UDP 2021/1990 for up to 20 s. Campus and office Wi-Fi often block broadcasts, and Windows blocks them on networks marked *Public*; if discovery fails, read the IP off the printer's screen and type it into the Connect panel once.
 
-**方式二:网页控制台**(课堂投影推荐,带 Jog 按钮)
+## Quick start: draw a square
 
-```bash
-python bambu_web.py --code 12345678
-```
+The repository ships ready-to-run files in [`examples/`](examples/). `examples/square.gcode` draws one 60 × 60 mm square outline in PLA. Drop it onto the page, look at the preview, then either **Stream** it (the slow, educational way: you can pause between lines) or press **Print now**.
 
-然后浏览器打开 <http://127.0.0.1:8347>:
-
-- **Jog 面板**:X/Y/Z 方向键 + 归零,步进 0.1/1/10/50 mm 可选
-- **温度卡片**:喷嘴/热床实时温度 + 一键预设(150/200/220 等)
-- **G-code 控制台**:逐行输入,每条显示 `ok`/`FAILED` 回执,↑↓ 翻历史
-- **Print now(一键打印)**:拖入 .gcode → 自动注入 Bambu Studio 真品骨架 `a1_skeleton.gcode.3mf`(Studio CLI 切的 10 mm 立方体,保留其 HEADER/CONFIG 注释块,EXECUTABLE 块整个换成你的 gcode,重算 md5)→ FTPS 上传 → MQTT `project_file` 启动。拖入 Studio 导出的 `.gcode.3mf` 则原样上传后启动。已在 A1 固件 01.08.01.00 上实测 IDLE → PREPARE → RUNNING
-- **Send to SD**(默认拖入即自动发送):把文件**原封不动**传进 SD 卡根目录。之后在 SD 文件列表里选中它点 **Print**:是 `.3mf` 直接启动;是裸 `.gcode` 则服务器自动取回、注入骨架、以 `<名字>.gcode.3mf` 传回并启动(裸 gcode 屏幕能点、远程 `project_file` 启动不了,固件只执行 Studio 结构的 3mf,`gcode_file` 命令直接返回 fail)。也可以在打印机屏幕上手动启动
-- **G-code 文件预览**:拖入文本 .gcode 时,浏览器内渲染 XY 刀路(挤出/空移分色、层滑块、支持 G2/G3 圆弧)
-- **Stream**:逐行代发(Printrun 式),可暂停/停止,进度条 + 预览图上高亮已执行部分;适合几百行的课堂演示文件
-- 状态栏实时显示打印机状态和 WiFi 信号
-
-> 踩坑记录:手工拼的最小 3mf(哪怕带全套元数据)固件会"受理但不执行"或在屏幕上卡 preparing;打印机屏幕启动裸 gcode 时会在 `/cache` 写一个 `.bbl` JSON 任务描述,但复刻它的字段也没用——只有 Studio 真品骨架能过。另外打印机若处于卡死的 "device is busy" 状态,所有启动命令都会被静默丢弃,重启打印机即可。
-
-加 `--host 0.0.0.0` 可以让同一局域网里的学生用手机/平板访问(注意:谁都能控制,下课记得关)。
-
-## 课堂演示参考序列
+The heart of that file is just this:
 
 ```gcode
-G28              ; 全部归零(必须先做)
-G90              ; 绝对坐标
-G1 X128 Y128 F6000   ; 移到台面中心
-G1 Z50 F1200     ; 抬高 50mm
-M104 S150        ; 喷嘴加热到 150°C(演示够用,不出丝、不烫伤耗材)
-M104 S0          ; 关加热
-G1 X10 Y10 F12000    ; 快速移动对比进给速度
+G90                          ; absolute XY positions
+M83                          ; relative extrusion: each E is "how much filament for THIS move"
+G0 F18000 X98 Y98 Z1.0       ; travel to the first corner, 1 mm above the bed (no filament)
+G1 F1200 Z0.2                ; lower to layer height
+G1 F600 E0.8                 ; prime: push 0.8 mm of filament so the line starts right at the corner
+G1 F1200 X158 Y98  E2.22     ; side 1 -> right  (60 mm)
+G1 F1200 X158 Y158 E2.22     ; side 2 -> back
+G1 F1200 X98  Y158 E2.22     ; side 3 -> left
+G1 F1200 X98  Y98  E2.22     ; side 4 -> front, square closed
+G1 F600 E-0.8                ; retract so the nozzle does not drool while lifting
+G0 F1200 Z5                  ; lift away from the print
 ```
 
-A1 行程约 256×256×256mm,X 是横梁、Y 是热床(bed-slinger),课堂上正好用来讲运动学。
+Reading it line by line:
 
-## 已知限制(和串口 Pronterface 的差别)
+- `G90` / `M83` set the rules: positions are absolute, extrusion amounts are relative.
+- `G0` is a travel move (no filament), `G1` is a working move. `F18000` means 18 000 mm/min = 300 mm/s; `F1200` is 20 mm/s — slow on purpose so people can watch.
+- `E2.22` is the filament to push while drawing one 60 mm side. The number comes from geometry: a line 0.45 mm wide and 0.2 mm tall has a cross-section of 0.09 mm²; 1.75 mm filament has 2.405 mm². So each millimetre of line needs 0.09 / 2.405 ≈ 0.037 mm of filament, and 60 mm needs 2.22 mm. Change the width or height and the number changes — that is the whole secret of slicing.
+- The 0.8 mm prime at the start and retract at the end are what make the corner crisp. Without the prime the first centimetre comes out empty, because the nozzle has nothing in it after travelling.
 
-- **只有"受理"回执,没有回读**:每条指令打印机会回 `ok`/`FAILED`,表示"收到并接受",**不代表动作执行完毕**;`M114`(查坐标)、`M503`(查参数)这类查询指令不会返回内容。温度等状态靠打印机周期推送(`status` 命令查看)。
-- **不能整份发 .gcode 文件**:`gcode_line` 只适合逐行/小段演示。要跑完整作业请正常用 Bambu Studio / OrcaSlicer 切片打印。
-- **TLS 校验默认关闭**:打印机证书由 Bambu 私有 CA 签发,脚本在局域网内跳过校验。要严格校验可信任 [OpenBambuAPI 的 ca_cert.pem](https://github.com/Doridian/OpenBambuAPI/blob/main/examples/ca_cert.pem) 并改用 `tls_set()`。
-- 固件是 Marlin 方言:常用指令(G0/G1/G28/G90/G91/G92/M104/M109/M140/M400 等)都支持,个别 Bambu 私有 M-code 行为不同。
+The full file wraps this body in `A1_start_minimal.gcode` (heat up, home, purge, draw a prime line along the left edge) and `A1_end_minimal.gcode` (heaters off, lift, present the bed). Both are short and commented — read them, then change the temperatures (`M140 S65`, `M109 S220`) to suit your filament.
 
-## 其他可选方案
+| File | What it is |
+|---|---|
+| `examples/square.gcode` | The square above, complete with start/end sequences. ~90 lines. |
+| `examples/star.gcode` | A five-pointed star generated from Rhino/Grasshopper, one layer. ~2 400 lines; a good Stream demo. |
+| `examples/hello_world.gcode` | "Hello World" written in filament, one layer. ~4 000 lines. |
+| `examples/A1_start_minimal.gcode` | Minimal start sequence for the A1 (no bed-levelling, reuses the stored mesh). |
+| `examples/A1_end_minimal.gcode` | Minimal end sequence. |
 
-| 方案 | 适合场景 |
-|------|----------|
-| [OctoPrint-BambuPrinter](https://github.com/jneilliii/OctoPrint-BambuPrinter) 插件(装 **0.1.8rc 预发布版**,别用 0.1.7) | 想要完整 Web 界面 + Terminal 标签页,原理同样是 MQTT 转发 |
-| OctoPrint 自带 [Virtual Printer](https://docs.octoprint.org/en/main/bundledplugins/virtual_printer.html) | **零硬件**课堂演示:学生输 G-code,虚拟固件回 ok/M105/M114,协议教学最真实 |
-| [ncviewer.com](https://ncviewer.com) | 浏览器里改一行 G-code 立刻看三维刀路,配合投影很直观 |
-| 修好 Anycubic Kobra:第三方 Vyper/Kobra 兼容一体式热端(24V 40W,约 $15–30) | 换上就恢复真·USB 串口 Pronterface;串口在主板上,和热端无关 |
+Writing your own: start from `square.gcode`, keep the start/end blocks, replace the middle. Stay inside X 0–256, Y 0–256 (A1 bed), use `Z0.2` for the first layer, and always `G28` before any move — the start sequence does that for you.
 
-## 协议参考
+## Using the console in class
 
-- [OpenBambuAPI — MQTT 文档](https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md)(`gcode_line` 报文格式出处)
-- [Bambu Wiki — Enable Developer Mode](https://wiki.bambulab.com/en/knowledge-sharing/enable-developer-mode)
-- [SimplyPrint — LAN-only Mode & Developer Mode 开启教程](https://help.simplyprint.io/en/article/bambu-lab-lan-only-mode-and-developer-mode-how-to-enable-xa0hch/)
+- **Home first.** The jog pad and the console send raw moves; the printer has no idea where the head is until `G28` runs. Press ⌂ (or type `G28`) at the start of every session.
+- **Jog** shows what X, Y, Z mean on a bed-slinger: X moves the head, Y moves the bed, Z moves the gantry.
+- **Console** is the Printrun moment: `G1 X128 Y128 F6000`, `M104 S150`, `G1 Z50`. Each line is sent on its own and the reply shows up underneath.
+- **Stream** a short file to show that a print is nothing but those lines, thousands of times. Pause mid-way, point at the preview, resume.
+- **Print now** for the real thing. The printer runs the file itself, at full speed, with its own progress display; the page shows state and temperatures and offers Pause / Stop.
+
+## How it works
+
+```
+browser (web_ui.html)  ──HTTP, localhost:8347──▶  bambu_web.py  ──MQTT over TLS, port 8883──▶  printer
+                                                        └───────FTPS, port 990──────────────▶  SD card
+```
+
+- **MQTT** carries control. Every command is a JSON message published to `device/<serial>/request`; the printer answers on `device/<serial>/report`. A single G-code line goes as `{"print":{"command":"gcode_line","param":"G28\n"}}`. The user name is always `bblp`, the password is the access code.
+- **The reply is only an acknowledgement.** The printer says "accepted", not "finished", and it never returns command output — `M114` (report position) and `M503` (report settings) produce nothing. Temperatures, state and progress arrive as periodic status pushes instead. This is a firmware property, not a limitation of this tool.
+- **FTPS** carries files. Uploads land in the SD card's root folder.
+
+### How the one-click print works
+
+The firmware's "start a print" command (`project_file`) only executes `.gcode.3mf` files with the structure Bambu Studio produces — a zip containing the G-code plus a dozen metadata files. A plain `.gcode` on the SD card can be started from the touchscreen, but not remotely, and hand-made 3mf files are silently ignored or hang in "preparing" (we tried, at length).
+
+So **Print now** injects your G-code into a genuine skeleton, `a1_skeleton.gcode.3mf`, sliced with the Bambu Studio command-line slicer from a 10 mm cube with stock A1 profiles: the skeleton's header comment blocks are kept, its executable block is replaced by your file, the MD5 sidecar is recomputed, and the result is uploaded and started. Files that already have Bambu Studio's header (anything exported from Studio) are used unchanged. Verified on the A1: `IDLE → PREPARE → RUNNING` within seconds.
+
+Credits for the protocol knowledge: [OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI), [ha-bambulab](https://github.com/greghesp/ha-bambulab), [bambulabs_api](https://github.com/acse-ci223/bambulabs_api), [bambuddy](https://github.com/maziggy/bambuddy) and [open-bamboo-networking](https://github.com/ClusterM/open-bamboo-networking).
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Connect panel says *connection refused* | Wrong access code, or Developer Mode not enabled. Re-read the code from the LAN-only page; after toggling the modes, restart the printer. |
+| *Printer not found* | Broadcast discovery is blocked (campus Wi-Fi, Windows "Public" network). Type the IP from the printer's screen into the Connect panel. Also close Bambu Studio / OrcaSlicer — they occupy the discovery port. |
+| Commands answer `ok` but nothing happens; the screen says *device is busy* | The firmware's job manager is wedged. Power-cycle the printer. |
+| Print starts, but the first centimetre of the first line is empty | No prime after the start sequence. Add `G1 E0.8 F600` before the first drawing move (see the square example). |
+| *FTP upload failed: timed out* | The printer's FTP server sometimes closes the connection late. The upload usually completed anyway; press Refresh in the SD list. |
+| *port 8347 unavailable* | Another console window is still open. Close it (or use `--port 8350`). |
+| Printer shows `FAILED` after you pressed Stop | That is simply Bambu's name for "cancelled". The next print starts normally. |
+| Remote print never starts on a non-A1 printer | The skeleton is sliced for the A1. Slice any small object for your model in Bambu Studio, export it as `.gcode.3mf`, and replace `a1_skeleton.gcode.3mf` with it. |
+
+## Limitations and notes
+
+- No position read-back (`M114`) — see above. Teach the concept with a simulator such as OctoPrint's virtual printer if you need the reply format.
+- `Stream` waits for an acknowledgement per line but the printer buffers moves, so "Pause" takes effect a few moves later. It is meant for demos, not for printing a 50 000-line file.
+- `--host 0.0.0.0` publishes the page to everyone on the network **with no password**. Anyone who opens it can heat and move the printer. Use it only on a trusted classroom network and stop the bridge afterwards.
+- The access code is stored in plain text in `~/.bambu-gcode-console.json` (it is a LAN-only device password, but treat the file accordingly; delete it on shared computers).
+- TLS certificate checks are disabled for the printer (it uses Bambu's private CA). Fine on a LAN you control.
+
+## Disclaimer
+
+This is classroom software written by a teacher, with an AI pair-programmer, over a few evenings. It is provided "as is", without warranty of any kind. It talks to an unofficial, undocumented interface that Bambu Lab may change at any time, and running a printer in Developer Mode is outside Bambu's support. You are responsible for anything the printer does while this tool is connected. Not affiliated with or endorsed by Bambu Lab.
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Chenming He

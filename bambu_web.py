@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-bambu_web.py — Bambu Lab A1 网页控制台(本机 HTTP → 打印机 MQTT 桥)。
+bambu_web.py - web console for Bambu Lab printers (a local HTTP server that bridges to
+the printer's MQTT and FTPS interfaces).
 
-日常用法:双击 启动控制台.bat(或直接 python bambu_web.py),浏览器会自动
-打开 http://127.0.0.1:8347,在页面上点「连接」即可 —— 访问码、IP、序列号
-都记在 ~/.bambu-gcode-console.json 里,首次填一次以后就不用再填。
+Everyday use: double-click start_console.bat / start_console.sh (or run python bambu_web.py).
+The browser opens http://127.0.0.1:8347; press Connect on the page. The access code, IP and
+serial are remembered in ~/.bambu-gcode-console.json, so they are typed only once.
 
-命令行参数(都可选,填了会存进配置):
-    python bambu_web.py [--code 访问码] [--ip x.x.x.x] [--serial SN]
+Command-line options (all optional; given values are saved to the config):
+    python bambu_web.py [--code ACCESS_CODE] [--ip x.x.x.x] [--serial SN]
                         [--port 8347] [--host 127.0.0.1] [--no-browser]
 
-前端页面在同目录的 web_ui.html;协议细节见 bambu_console.py 和 README。
+The page lives in web_ui.html next to this file; protocol notes are in README.md.
 """
 
 import argparse
@@ -41,12 +42,13 @@ STATUS_KEYS = (
 )
 
 
-# ── SD 卡:FTPS 上传 + 最小 .3mf 打包 ─────────────────────────────
-# 开发者模式开放隐式 FTPS(端口 990);project_file 只认 .3mf,所以把
-# gcode 包进社区验证过的最小 .3mf 结构(Metadata/plate_1.gcode + md5)。
+# -- SD card: FTPS upload + 3mf wrapping -------------------------------------
+# Developer Mode exposes implicit FTPS on port 990. The firmware's project_file
+# command only executes Bambu-Studio-structured .gcode.3mf files, so raw gcode is
+# injected into a genuine Studio skeleton (see wrap_gcode_in_skeleton).
 
 class ImplicitFTPS(ftplib.FTP_TLS):
-    """ftplib 只支持显式 FTPS;打印机用隐式(连上就 TLS),包一层。"""
+    """ftplib only speaks explicit FTPS; the printer uses implicit FTPS (TLS from the first byte)."""
 
     @property
     def sock(self):
@@ -71,7 +73,7 @@ def _ftps_session(ip, code, timeout=10):
 
 
 def sd_upload(ip, code, name, data):
-    """把文件原样上传到 SD 卡根目录。个别固件在数据传完后 226 响应超时——重连核对大小兜底。"""
+    """Upload a file unchanged to the SD card root. Some firmware times out on the final 226 reply; reconnect and compare sizes as a fallback."""
     try:
         ftps = _ftps_session(ip, code, timeout=20)
         try:
@@ -87,7 +89,7 @@ def sd_upload(ip, code, name, data):
         try:
             chk.voidcmd("TYPE I")
             if chk.size(name) == len(data):
-                return  # 实际已经传上去了
+                return  # the transfer did complete
         finally:
             try:
                 chk.quit()
@@ -138,7 +140,7 @@ def sd_list(ip, code):
 
 
 def safe_sd_name(filename):
-    """保留原文件名(含扩展名),只清洗掉路径分隔符和奇怪字符。"""
+    """Keep the original file name (with extension); strip path separators and odd characters."""
     name = re.sub(r"[^A-Za-z0-9_.\-]+", "_", Path(filename).name).strip("._") or "file.gcode"
     return name[:100]
 
@@ -147,12 +149,13 @@ SKELETON_3MF = Path(__file__).resolve().parent / "a1_skeleton.gcode.3mf"
 
 
 def wrap_gcode_in_skeleton(gcode_text):
-    """把裸 gcode 注入 Bambu Studio 真品 .gcode.3mf 骨架("dummy 3mf" 法)。
+    """Inject raw gcode into a genuine Bambu Studio .gcode.3mf skeleton ("dummy 3mf" method).
 
-    固件的 project_file 只执行 Studio 结构的 3mf——手工拼的骨架会卡在
-    "准备中",所以骨架用 Studio CLI 切出来的真文件(10 mm 立方体)。保留它
-    的 HEADER/CONFIG 注释块,EXECUTABLE 块整个换成用户 gcode,重算 md5。
-    用户 gcode 若本身已带 HEADER_BLOCK(Studio 导出的),则原样使用。
+    The firmware's project_file only executes Studio-structured 3mf files; hand-built
+    skeletons are ignored or hang in "preparing". So the skeleton is a real file sliced
+    with the Studio CLI (a 10 mm cube). Its HEADER/CONFIG comment blocks are kept, the
+    EXECUTABLE block is replaced by the user's gcode, and the md5 sidecar is recomputed.
+    Gcode that already carries a HEADER_BLOCK (a Studio export) is used as-is.
     """
     skel = zipfile.ZipFile(SKELETON_3MF)
     if "HEADER_BLOCK_START" in gcode_text:
@@ -176,7 +179,7 @@ def wrap_gcode_in_skeleton(gcode_text):
 
 
 class BambuLink:
-    """持有一条到打印机的 MQTT 连接,提供 send_gcode(等待受理回执)和状态缓存。"""
+    """One MQTT connection to the printer: send commands, wait for acks, cache status."""
 
     def __init__(self, ip, serial, code):
         self.ip = ip
@@ -186,7 +189,7 @@ class BambuLink:
         self.connected = False
         self.auth_failed = False
         self.last_report = 0.0
-        # A 系列固件对旧 sequence_id 会静默忽略命令,用时间戳起步保证新鲜
+        # A-series firmware silently ignores commands with a stale sequence_id; start from a timestamp
         self._seq = int(time.time())
         self._lock = threading.Lock()
         self._ack_events = {}   # seq -> threading.Event
@@ -195,7 +198,7 @@ class BambuLink:
 
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         c.username_pw_set("bblp", code)
-        # 打印机证书由 Bambu 私有 CA 签发,局域网内跳过校验(同 bambu_console.py)
+        # the printer's certificate is signed by Bambu's private CA; skip verification on the LAN
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -245,7 +248,7 @@ class BambuLink:
             return
         p = data.get("print", {})
         seq = str(p.get("sequence_id", ""))
-        # 只有 command 和我们发出的那条对得上才算回执(状态推送也带 sequence_id)
+        # count it as our ack only if the command matches what we sent (status pushes carry sequence_id too)
         if seq in self._ack_events and p.get("command") == self._ack_expect.get(seq):
             self._acks[seq] = (str(p.get("result", "?")), p.get("reason") or "")
             self._ack_events[seq].set()
@@ -255,7 +258,7 @@ class BambuLink:
         self.last_report = time.time()
 
     def send_command(self, print_payload, timeout=5.0):
-        """发送一条 print 命令并等待打印机的受理回执。"""
+        """Publish one print command and wait for the printer's acknowledgement."""
         seq = self._next_seq()
         ev = threading.Event()
         self._ack_events[seq] = ev
@@ -271,12 +274,12 @@ class BambuLink:
         return {"result": result, "reason": reason}
 
     def send_gcode(self, gcode, timeout=3.0):
-        """发送一行或多行(\n 分隔)G-code,等待受理回执。"""
+        """Send one or more newline-separated G-code lines and wait for the acknowledgement."""
         return self.send_command(
             {"command": "gcode_line", "param": gcode.rstrip("\n") + "\n"}, timeout)
 
     def start_sd_print(self, name, md5=""):
-        """启动 SD 卡上的 .3mf(param 指向包内的 gcode)。只认 Studio 结构的 3mf。"""
+        """Start a .3mf on the SD card (param names the gcode inside it). Studio-structured 3mf only."""
         subtask = name
         for ext in (".3mf", ".gcode"):
             if subtask.lower().endswith(ext):
@@ -304,7 +307,7 @@ class BambuLink:
 
 
 class JobRunner:
-    """把加载的 G-code 文件逐行喂给打印机(Printrun 式),每行等受理回执。"""
+    """Feed a loaded G-code file to the printer line by line (Printrun style), waiting for each ack."""
 
     def __init__(self, app):
         self.app = app
@@ -380,7 +383,7 @@ class JobRunner:
 
 
 class App:
-    """连接状态机:disconnected → connecting → connected / error。"""
+    """Connection state machine: disconnected -> connecting -> connected / error."""
 
     def __init__(self, ip=None, serial=None, code=None):
         seed = {k: v for k, v in (("ip", ip), ("serial", serial), ("code", code)) if v}
@@ -405,7 +408,7 @@ class App:
             self.error = "Access code required (the 8 characters on the printer's LAN-only Mode screen)"
             return
         if not self._busy.acquire(blocking=False):
-            return  # 已经在连了
+            return  # already connecting
         self.phase, self.error = "connecting", ""
         threading.Thread(target=self._connect, daemon=True).start()
 
@@ -428,7 +431,7 @@ class App:
             except OSError as e:
                 self.phase, self.error = "error", f"Cannot reach {found['ip']}:8883 — {e}"
                 return
-            for _ in range(60):  # 最多等 6 秒
+            for _ in range(60):  # wait up to 6 s
                 if link.connected or link.auth_failed:
                     break
                 time.sleep(0.1)
@@ -448,7 +451,7 @@ class App:
 def make_handler(app: App, html_path: Path):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
-            pass  # 安静点,课堂投影不刷日志
+            pass  # keep the terminal quiet during class
 
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -546,7 +549,7 @@ def make_handler(app: App, html_path: Path):
                 app.job.stop()
                 self._json({"ok": True})
             elif self.path == "/api/sd/upload":
-                # 文件原样(base64)上传到 SD 卡,不做任何包装或改写
+                # upload the file unchanged (base64 in, raw bytes out): no wrapping, no rewriting
                 try:
                     data = self._body()
                     filename = str(data.get("filename", "file.gcode"))
@@ -568,7 +571,7 @@ def make_handler(app: App, html_path: Path):
                 except Exception as e:
                     self._json({"ok": False, "error": f"FTP upload failed: {e}"})
             elif self.path == "/api/print_file":
-                # 一键打印:裸 gcode 注入真品骨架 / .3mf 原样 → 上传 → project_file 启动
+                # one-click print: wrap raw gcode in the skeleton (or pass a .3mf through) -> upload -> project_file
                 try:
                     data = self._body()
                     filename = str(data.get("filename", "file.gcode"))
@@ -619,7 +622,7 @@ def make_handler(app: App, html_path: Path):
                 cfg = load_cache()
                 md5 = ""
                 if not name.lower().endswith(".3mf"):
-                    # 裸 gcode 固件远程启动不了:取回 → 注入真品骨架 → 以 .gcode.3mf 传回 → 启动
+                    # raw gcode cannot be started remotely: fetch -> wrap in the skeleton -> upload as .gcode.3mf -> start
                     try:
                         raw = sd_download(cfg.get("ip", ""), cfg.get("code", ""), name)
                         payload = wrap_gcode_in_skeleton(raw.decode("utf-8", "replace"))
@@ -665,7 +668,7 @@ def make_handler(app: App, html_path: Path):
 
 
 def main():
-    # Windows 控制台默认 cp1252/GBK,中文输出会炸;强制 UTF-8
+    # Windows consoles default to cp1252/GBK, which breaks non-ASCII output; force UTF-8
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
