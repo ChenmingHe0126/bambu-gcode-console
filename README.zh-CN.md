@@ -72,10 +72,10 @@ M400                      ; 等上面所有动作都完成
 
 准备好上料了,`examples/star.gcode` 和 `examples/hello_world.gcode` 是完整的单层打印文件(自带加热、归零、清料的起始段和降温的结束段)。按你的耗材改 `A1_start_minimal.gcode` 里的温度。
 
-| | | |
-|:-:|:-:|:-:|
-| ![星星](docs/print_star.jpg) | ![Hello World](docs/print_hello_world.jpg) | ![螺旋花](docs/print_flower.jpg) |
-| `star.gcode` | `hello_world.gcode` | 同一套流程画的螺旋花 |
+| | |
+|:-:|:-:|
+| ![星星](docs/print_star.jpg) | ![Hello World](docs/print_hello_world.jpg) |
+| `star.gcode` | `hello_world.gcode` |
 
 | 文件 | 内容 |
 |---|---|
@@ -83,6 +83,17 @@ M400                      ; 等上面所有动作都完成
 | `examples/star.gcode` | PLA 单层五角星,约 2 400 行。 |
 | `examples/hello_world.gcode` | PLA 的 "Hello World",约 4 000 行。 |
 | `examples/A1_start_minimal.gcode` / `A1_end_minimal.gcode` | 上面两个打印文件用到的 A1 最小起始 / 结束段。 |
+| `examples/grasshopper/Gcode.gh` | 生成上面星星和 Hello World 的 Grasshopper 定义(见下)。 |
+
+### 自己做:Grasshopper 模板
+
+`examples/grasshopper/Gcode.gh` 能把 Rhino 里画的任意曲线变成单层 G-code 文件。需要 Rhino 7/8 + Grasshopper,只用标准组件(不需要插件)。它的流程:
+
+1. 在 Rhino 的 XY 平面上画一条曲线,放在床面范围内(256 × 256 mm,原点在左前角),用 `Curve` 参数引用它。
+2. `Divide Curve` 把曲线采样成很多小段(滑块控制数量;直线几百段就够,拐角会保留)。
+3. 每一段的长度乘以一个"每毫米耗材量"系数,得到它的 `E` 值——和方形示例里的算法一样(线宽 × 层高 ÷ 耗材截面积 ≈ 0.037)。两个滑块用来标定;想要线粗一点就调大系数。
+4. 点坐标和 `E` 值被拼成 `G1 X.. Y.. Z0.2 E..`,前面加上第一条空移,再用 Merge 把起始段和结束段(两个文本面板,内容和 `A1_start_minimal` / `A1_end_minimal` 相同)包在外面。
+5. 把输出面板的文字复制到一个文本文件里,命名为 `xxx.gcode`,拖进控制台,看预览,打印。
 
 ## 工作原理
 

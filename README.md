@@ -72,10 +72,10 @@ M400                      ; wait until every move above has finished
 
 When you are ready for plastic, `examples/star.gcode` and `examples/hello_world.gcode` are complete single-layer prints (they include the start sequence that heats, homes and purges, and the end sequence that cools down). Edit the temperatures in `A1_start_minimal.gcode` to match your filament.
 
-| | | |
-|:-:|:-:|:-:|
-| ![Star](docs/print_star.jpg) | ![Hello World](docs/print_hello_world.jpg) | ![Spirograph](docs/print_flower.jpg) |
-| `star.gcode` | `hello_world.gcode` | a spirograph from the same workflow |
+| | |
+|:-:|:-:|
+| ![Star](docs/print_star.jpg) | ![Hello World](docs/print_hello_world.jpg) |
+| `star.gcode` | `hello_world.gcode` |
 
 | File | What it is |
 |---|---|
@@ -83,6 +83,17 @@ When you are ready for plastic, `examples/star.gcode` and `examples/hello_world.
 | `examples/star.gcode` | Single-layer star in PLA, ~2 400 lines. |
 | `examples/hello_world.gcode` | "Hello World" in PLA, ~4 000 lines. |
 | `examples/A1_start_minimal.gcode` / `A1_end_minimal.gcode` | Minimal A1 start / end sequences used by the prints above. |
+| `examples/grasshopper/Gcode.gh` | The Grasshopper definition that generated the star and Hello World (below). |
+
+### Make your own: the Grasshopper template
+
+`examples/grasshopper/Gcode.gh` turns any curve drawn in Rhino into a single-layer G-code file. Rhino 7/8 with Grasshopper, standard components only (no plugins). How it works:
+
+1. Draw a curve on the XY plane in Rhino, inside the bed (256 × 256 mm, origin at the front-left corner), and reference it in the `Curve` parameter.
+2. `Divide Curve` samples the curve into short segments (the slider sets how many; a few hundred is plenty for straight lines, corners are kept).
+3. Each segment's length is multiplied by a *filament per millimetre* factor to get its `E` value — the same arithmetic as the square example (line width × layer height ÷ filament cross-section ≈ 0.037). Two sliders calibrate it; raise the factor for a fatter line.
+4. The points and `E` values are formatted into `G1 X.. Y.. Z0.2 E..` lines, the first travel move is prepended, and the start / end sequences (the two text panels — same text as `A1_start_minimal` / `A1_end_minimal`) are merged around them.
+5. Copy the output panel into a text file named `something.gcode`, drop it onto the console, check the preview, print.
 
 ## How it works
 
