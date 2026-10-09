@@ -4,5 +4,6 @@
 *.md text eol=lf
 *.gcode text eol=lf
 *.sh text eol=lf
+*.command text eol=lf
 *.bat text eol=crlf
 *.3mf binary

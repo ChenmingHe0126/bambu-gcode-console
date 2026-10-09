@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+.claude/
 .DS_Store
 Thumbs.db
 *.log

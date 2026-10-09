@@ -44,6 +44,7 @@
     padding: 4px 14px; font-size: 13px; color: var(--muted);
   }
   .chip b { color: var(--text); font-weight: 600; }
+  button.chip { cursor: pointer; color: var(--accent); border-color: rgba(0,194,87,.4); }
   #state-chip.printing { border-color: var(--accent); color: var(--accent); }
 
   /* -- card layout -- */
@@ -198,6 +199,7 @@
   <div class="chips">
     <div class="chip" id="state-chip">State <b id="state">—</b></div>
     <div class="chip">WiFi <b id="wifi">—</b></div>
+    <button class="chip" id="reconnect-btn" onclick="showConnect()" hidden>Connect…</button>
   </div>
 </header>
 
@@ -285,7 +287,7 @@
       <div class="ctl-row">
         <button class="primary" id="job-start" onclick="startJob()">▶ Stream</button>
         <button id="job-pause" onclick="togglePauseJob()" disabled>⏸ Pause</button>
-        <button class="danger" id="job-stop" onclick="stopJob()" disabled>⏹ Stop</button>
+        <button class="danger" id="job-stop" onclick="stopJob()" disabled title="Stop streaming and turn the heaters off">⏹ Stop</button>
         <div class="progress"><div id="job-bar"></div></div>
         <span class="lbl" id="job-label"></span>
       </div>
@@ -335,6 +337,10 @@
     <div class="field">
       <label>IP address (optional — leave empty to auto-discover)</label>
       <input id="ip-input" autocomplete="off" spellcheck="false" placeholder="auto-discover">
+    </div>
+    <div class="field">
+      <label>Serial number (optional — only if connecting still fails; Settings → Device)</label>
+      <input id="serial-input" autocomplete="off" spellcheck="false" placeholder="auto-discover">
     </div>
     <button id="connect-btn" onclick="doConnect()">Connect</button>
     <div id="connect-msg"></div>
@@ -423,7 +429,10 @@
   });
   $('file-input').addEventListener('change', e => {
     if (e.target.files.length) readFile(e.target.files[0]);
+    e.target.value = '';   // so picking the same file again triggers a reload
   });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
 
   function bufToB64(buf) {
     const bytes = new Uint8Array(buf);
@@ -433,18 +442,24 @@
     return btoa(s);
   }
 
+  const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;   // larger text files skip parse/preview/stream
+
   function readFile(f) {
     const r = new FileReader();
+    r.onerror = () => addLog('<< could not read ' + f.name + (r.error ? ': ' + r.error.message : ''), 'err');
     r.onload = () => {
       fileName = f.name;
-      fileB64 = bufToB64(r.result);
-      if (/\.(gcode|gco|g|nc|txt)$/i.test(f.name)) {
-        loadText(f.name, new TextDecoder().decode(r.result));
+      fileB64 = bufToB64(r.result);           // the exact bytes; uploads never re-encode
+      const isText = /\.(gcode|gco|g|nc|txt)$/i.test(f.name);
+      if (isText && f.size <= PREVIEW_MAX_BYTES) {
+        loadText(f.name, new TextDecoder().decode(r.result), fileB64);
       } else {
-        // binary (e.g. a Bambu Studio .gcode.3mf export): no preview, send-to-SD / print only
+        // binary (a Bambu Studio .gcode.3mf export) or too big to parse in the page
         fileText = ''; model = null;
         $('file-info').hidden = true;
-        addLog('· Loaded ' + f.name + ' (binary — no preview, send-to-SD only)', 'sys');
+        addLog('· Loaded ' + f.name + (isText
+          ? ' (too large to preview or stream — Print now / Send to SD only)'
+          : ' (binary — no preview, Print now / Send to SD only)'), 'sys');
         if ($('auto-sd').checked && isConnected) uploadToSd();
         else $('sd-msg').textContent = f.name + ' ready — Print now, or Send to SD';
       }
@@ -458,15 +473,13 @@
     const segs = [];
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let ln = 0; ln < lines.length; ln++) {
-      const raw = lines[ln].split(';')[0].trim();
+      const raw = lines[ln].split(';')[0].trim().toUpperCase().replace(/^N\d+\s*/, '');
       if (!raw) continue;
-      const parts = raw.toUpperCase().split(/\s+/);
-      const cmd = parts[0];
+      const m = raw.match(/^([GM])\s*0*(\d+)/);   // "G01", "g1", "G 1" all mean G1
+      if (!m) continue;
+      const cmd = m[1] + m[2];
       const p = {};
-      for (let i = 1; i < parts.length; i++) {
-        const v = parseFloat(parts[i].slice(1));
-        if (!isNaN(v)) p[parts[i][0]] = v;
-      }
+      for (const t of raw.slice(m[0].length).matchAll(/([A-Z])\s*(-?\d*\.?\d+)/g)) p[t[1]] = parseFloat(t[2]);
       if (cmd === 'G90') { abs = true; absE = true; }
       else if (cmd === 'G91') { abs = false; absE = false; }
       else if (cmd === 'M82') absE = true;
@@ -511,9 +524,9 @@
     return { segs, layerZs, bounds: { minX, minY, maxX, maxY }, lineCount: lines.length };
   }
 
-  function loadText(name, text) {
+  function loadText(name, text, b64) {
     fileName = name; fileText = text;
-    fileB64 = bufToB64(new TextEncoder().encode(text).buffer);
+    fileB64 = b64 || bufToB64(new TextEncoder().encode(text).buffer);
     model = parseGcode(text);
     selLayer = -1;
     $('file-info').hidden = false;
@@ -569,12 +582,16 @@
   }
 
   async function post(url, body) {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-    });
-    return r.json();
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      return await r.json();
+    } catch (e) {
+      return { ok: false, result: 'error', error: 'Local bridge unreachable: ' + e.message };
+    }
   }
 
   async function startJob() {
@@ -619,7 +636,9 @@
     }
   }
   async function refreshSd(selectName) {
-    const r = await (await fetch('/api/sd/list')).json();
+    let r;
+    try { r = await (await fetch('/api/sd/list')).json(); }
+    catch (e) { r = { ok: false, error: 'Local bridge unreachable', files: [] }; }
     const sel = $('sd-select');
     sel.innerHTML = '';
     (r.files || []).forEach(f => {
@@ -667,6 +686,7 @@
   async function doConnect() {
     const code = $('code-input').value.trim();
     const ip = $('ip-input').value.trim();
+    const serial = $('serial-input').value.trim();
     const msg = $('connect-msg');
     if (!code) { msg.textContent = 'Please enter the access code'; msg.className = 'err'; return; }
     $('connect-btn').disabled = true;
@@ -676,7 +696,7 @@
       await fetch('/api/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, ip }),
+        body: JSON.stringify({ code, ip, serial }),
       });
     } catch (e) {
       msg.textContent = 'Local bridge unreachable: ' + e.message;
@@ -686,6 +706,13 @@
   }
   $('code-input').addEventListener('keydown', e => { if (e.key === 'Enter') doConnect(); });
   $('ip-input').addEventListener('keydown', e => { if (e.key === 'Enter') doConnect(); });
+  $('serial-input').addEventListener('keydown', e => { if (e.key === 'Enter') doConnect(); });
+
+  function showConnect() {
+    $('overlay').hidden = false;
+    $('connect-btn').disabled = false;
+    $('code-input').focus();
+  }
 
   function updateOverlay(d) {
     const overlay = $('overlay');
@@ -693,6 +720,7 @@
     if (!prefilled) {
       if (d.code) $('code-input').value = d.code;
       if (d.ip) $('ip-input').value = d.ip;
+      if (d.serial) $('serial-input').value = d.serial;
       prefilled = true;
     }
     if (d.phase === 'connected') { overlay.hidden = true; return; }
@@ -714,6 +742,7 @@
       updateOverlay(d);
       isConnected = d.connected;
       $('conn-dot').classList.toggle('on', d.connected);
+      $('reconnect-btn').hidden = d.connected || d.phase === 'connecting';
       $('printer-id').textContent = (d.ip && d.serial) ? d.ip + ' · ' + d.serial : '';
       $('nozzle-t').textContent = fmt(s.nozzle_temper);
       $('nozzle-t').classList.toggle('hot', (s.nozzle_temper || 0) > 50);
@@ -729,8 +758,8 @@
       const j = d.job || { state: 'idle' };
       if (j.state !== lastJobState) {
         if (j.state === 'done') addLog('<< stream finished (' + j.total + ' lines)', 'ok');
-        if (j.state === 'error') addLog('<< stream error: ' + j.error, 'err');
-        if (j.state === 'stopped') addLog('<< stream stopped', 'sys');
+        if (j.state === 'error') addLog('<< stream error: ' + j.error + (j.note ? ' — ' + j.note : ''), 'err');
+        if (j.state === 'stopped') addLog('<< stream stopped' + (j.note ? ' — ' + j.note : ''), 'sys');
         lastJobState = j.state;
         if (model && (j.state === 'done' || j.state === 'stopped' || j.state === 'error'))
           drawPreview(-1);

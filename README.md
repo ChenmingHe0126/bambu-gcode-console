@@ -25,7 +25,7 @@ A Bambu A1 has no such port. What it does have, once you switch it to **LAN-only
 | **Temperatures** | Live nozzle and bed readings, one-tap presets (150 / 200 / 220 °C nozzle, 45 / 60 °C bed) and Off. |
 | **G-code console** | Type any G-code, press Enter, see the printer's `ok` / `FAILED` reply. Arrow keys recall history. |
 | **File preview** | Drop a `.gcode` file: the XY toolpath is drawn in the page (green = extruding, grey = travel), with a layer slider. Handles `G2`/`G3` arcs and CRLF / CR / LF line endings. |
-| **Stream** | Sends the loaded file **one line at a time** and waits for each reply — the Printrun way. Pause / Stop, progress bar, and the preview highlights what has already been sent. Best for short demo files (a few hundred lines). |
+| **Stream** | Sends the loaded file **one line at a time** and waits for each reply — the Printrun way. Pause / Stop, progress bar, and the preview highlights what has already been sent. Stop (or an error) switches the nozzle, bed and fan off. Best for short demo files (a few hundred lines). |
 | **Print now** | Uploads the file to the SD card and starts it as a normal print, so the printer runs it at full speed by itself. Raw `.gcode` is wrapped into the format the firmware insists on (see [How printing works](#how-the-one-click-print-works)); Bambu Studio `.gcode.3mf` exports are sent as-is. |
 | **Send to SD** | Just copies the file to the SD card unchanged (on by default when a file is loaded). Start it from the printer's screen, or pick it in the SD list and press Print. |
 | **SD card files** | List, Print, Delete. Printing a raw `.gcode` from the list converts it on the fly. |
@@ -59,9 +59,9 @@ cd bambu-gcode-console
 (or click **Code → Download ZIP** on GitHub and unzip it.)
 
 - **Windows:** double-click `start_console.bat`.
-- **macOS / Linux:** double-click `start_console.sh` (macOS: right-click → Open the first time), or run `./start_console.sh` in a terminal.
+- **macOS:** double-click `start_console.command` (right-click → Open the first time). **Linux, or any terminal:** `./start_console.sh`. On Pythons that refuse `pip install` (Debian/Ubuntu/Fedora/Homebrew, PEP 668) the script creates a private `.venv` inside the folder by itself.
 
-The launcher installs `paho-mqtt` if it is missing, starts the bridge on `http://127.0.0.1:8347` and opens your browser. Type the access code, press **Connect**. The code, IP and serial are remembered in `~/.bambu-gcode-console.json`, so next time it is one click.
+The launcher installs `paho-mqtt` if it is missing, starts the bridge on `http://127.0.0.1:8347` and opens your browser. Type the access code, press **Connect**. The code, IP and serial are remembered in `~/.bambu-gcode-console.json` once a connection has succeeded, so next time it is one click. If the printer is not found automatically, type its IP into the same panel (and, if it still fails, the serial number from *Settings → Device*). Should the link drop later, a **Connect…** button appears in the header.
 
 Closing the black terminal window stops the bridge. Only one console can run at a time (port 8347).
 
@@ -147,7 +147,7 @@ Credits for the protocol knowledge: [OpenBambuAPI](https://github.com/Doridian/O
 | Symptom | Cause and fix |
 |---|---|
 | Connect panel says *connection refused* | Wrong access code, or Developer Mode not enabled. Re-read the code from the LAN-only page; after toggling the modes, restart the printer. |
-| *Printer not found* | Broadcast discovery is blocked (campus Wi-Fi, Windows "Public" network). Type the IP from the printer's screen into the Connect panel. Also close Bambu Studio / OrcaSlicer — they occupy the discovery port. |
+| *Printer not found* | Broadcast discovery is blocked (campus Wi-Fi, Windows "Public" network). Type the IP from the printer's screen into the Connect panel; if that is still not enough, add the serial number (*Settings → Device*). Also close Bambu Studio / OrcaSlicer — they occupy the discovery port. |
 | Commands answer `ok` but nothing happens; the screen says *device is busy* | The firmware's job manager is wedged. Power-cycle the printer. |
 | Print starts, but the first centimetre of the first line is empty | No prime after the start sequence. Add `G1 E0.8 F600` before the first drawing move (see the square example). |
 | *FTP upload failed: timed out* | The printer's FTP server sometimes closes the connection late. The upload usually completed anyway; press Refresh in the SD list. |
@@ -159,7 +159,7 @@ Credits for the protocol knowledge: [OpenBambuAPI](https://github.com/Doridian/O
 
 - No position read-back (`M114`) — see above. Teach the concept with a simulator such as OctoPrint's virtual printer if you need the reply format.
 - `Stream` waits for an acknowledgement per line but the printer buffers moves, so "Pause" takes effect a few moves later. It is meant for demos, not for printing a 50 000-line file.
-- `--host 0.0.0.0` publishes the page to everyone on the network **with no password**. Anyone who opens it can heat and move the printer. Use it only on a trusted classroom network and stop the bridge afterwards.
+- `--host 0.0.0.0` publishes the page to everyone on the network **with no password**. Anyone who opens it can heat and move the printer. Use it only on a trusted classroom network and stop the bridge afterwards. (The access code itself is pre-filled only in the browser on the teacher's machine; other devices never receive it.)
 - The access code is stored in plain text in `~/.bambu-gcode-console.json` (it is a LAN-only device password, but treat the file accordingly; delete it on shared computers).
 - TLS certificate checks are disabled for the printer (it uses Bambu's private CA). Fine on a LAN you control.
 

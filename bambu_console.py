@@ -24,12 +24,17 @@ import ssl
 import sys
 import time
 
-import paho.mqtt.client as mqtt
+try:
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.client import CallbackAPIVersion  # only exists in paho-mqtt 2.x
+except ImportError:
+    sys.exit('This tool needs paho-mqtt 2.x. Install it with:  python -m pip install "paho-mqtt>=2.0"')
 
 from bambu_discovery import load_cache, resolve, save_cache
 
 seq = 0
-last_status = {}  # fields of interest from the latest status report
+last_status = {}        # fields of interest from the latest status report
+conn = {"up": None}     # None = not decided yet, True = connected, False = refused
 
 
 def next_seq():
@@ -46,7 +51,7 @@ STATUS_KEYS = (
 
 
 def make_client(args):
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
+    client = mqtt.Client(CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
     client.username_pw_set("bblp", args.code)
     # The printer's certificate is signed by Bambu's private CA, so public CAs can't verify it.
     # On a classroom LAN we skip verification; for strict checking, trust the ca_cert.pem
@@ -58,7 +63,9 @@ def make_client(args):
 
     def on_connect(c, userdata, flags, rc, props=None):
         if rc == 0:
-            print(f"[connected to {args.ip}] subscribing to status reports…")
+            conn["up"] = True
+            save_cache({"code": args.code})  # remember the code only once it is known to work
+            print(f"[connected to {args.ip}] subscribing to status reports...")
             c.subscribe(f"device/{args.serial}/report")
             # request one full status push, to get initial temperatures etc.
             c.publish(
@@ -66,7 +73,13 @@ def make_client(args):
                 json.dumps({"pushing": {"sequence_id": next_seq(), "command": "pushall"}}),
             )
         else:
-            print(f"[connection refused] rc={rc} (check IP/access code, and that Developer Mode is on)")
+            conn["up"] = False
+            print(f"[connection refused] rc={rc} (check the access code, and that Developer Mode is on)")
+
+    def on_disconnect(c, userdata, flags, rc, props=None):
+        if conn["up"]:
+            print("\n[connection lost] trying to reconnect...")
+        conn["up"] = None
 
     def on_message(c, userdata, msg):
         try:
@@ -86,6 +99,7 @@ def make_client(args):
                 last_status[k] = p[k]
 
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
     return client
 
@@ -98,13 +112,16 @@ def send_gcode(client, serial, line):
             "param": line + "\n",
         }
     }
-    client.publish(f"device/{serial}/request", json.dumps(payload))
+    info = client.publish(f"device/{serial}/request", json.dumps(payload))
+    if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        print(f"  !! not sent - no connection to the printer (rc={info.rc})")
+        return
     print(f"  >> {line}")
 
 
 def print_status():
     if not last_status:
-        print("  (no status report yet — wait a second and try again)")
+        print("  (no status report yet - wait a second and try again)")
         return
     n = last_status.get("nozzle_temper", "?")
     nt = last_status.get("nozzle_target_temper", "?")
@@ -119,7 +136,7 @@ HELP = """Commands:
   status          show nozzle/bed temperatures and printer state
   help            show this help
   exit / quit     leave the console
-Note: gcode_line only acks acceptance — query commands like M114 return no
+Note: gcode_line only acks acceptance - query commands like M114 return no
       output. Home first (G28) before moving; keep demo temps at or below
       M104 S150."""
 
@@ -129,10 +146,10 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    ap = argparse.ArgumentParser(description="Line-by-line G-code console for Bambu Lab A1")
+    ap = argparse.ArgumentParser(description="Line-by-line G-code console for Bambu Lab printers")
     ap.add_argument("--ip", help="printer LAN IP (omit to auto-discover)")
     ap.add_argument("--serial", help="printer serial number (omit to auto-discover)")
-    ap.add_argument("--code", help="LAN-only Mode access code (remembered after first use)")
+    ap.add_argument("--code", help="LAN-only Mode access code (remembered after the first successful connection)")
     args = ap.parse_args()
 
     if not args.code:
@@ -140,18 +157,15 @@ def main():
     if not args.code:
         try:
             args.code = input("Access Code (8 characters on the LAN-only Mode screen): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             args.code = ""
     if not args.code:
-        print("No access code, exiting")
-        sys.exit(1)
-    save_cache({"code": args.code})
+        sys.exit("No access code, exiting")
 
-    found = resolve(args.ip, args.serial)
+    found = resolve(args.ip, args.serial, args.code)
     if not found:
-        print("Printer not found. Check it is on and on the same network, or read the IP "
-              "from the printer's Settings > Network screen and pass --ip (remembered).")
-        sys.exit(1)
+        sys.exit("Printer not found. Check it is on and on the same network, or read the IP "
+                 "from the printer's Settings > Network screen and pass --ip (remembered).")
     args.ip, args.serial = found["ip"], found["serial"]
     print(f"Printer: {found.get('name', '?')} ({found.get('model', '?')}) "
           f"@ {args.ip}  SN {args.serial}")
@@ -160,16 +174,24 @@ def main():
     try:
         client.connect(args.ip, 8883, keepalive=30)
     except OSError as e:
-        print(f"[cannot reach {args.ip}:8883] {e}")
-        sys.exit(1)
+        sys.exit(f"[cannot reach {args.ip}:8883] {e}")
     client.loop_start()
-    time.sleep(1.5)
+
+    deadline = time.time() + 6
+    while conn["up"] is None and time.time() < deadline:
+        time.sleep(0.1)
+    if conn["up"] is False:
+        client.loop_stop()
+        sys.exit("Exiting - the printer refused the connection. Re-read the access code from the "
+                 "LAN-only Mode page; if you just toggled Developer Mode, restart the printer.")
+    if conn["up"] is None:
+        print("(no reply from the printer yet - continuing; commands are sent once it connects)")
 
     print(HELP)
     while True:
         try:
             line = input("gcode> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             break
         if not line:
             continue
@@ -190,4 +212,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nBye")

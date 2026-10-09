@@ -30,7 +30,11 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import paho.mqtt.client as mqtt
+try:
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.client import CallbackAPIVersion  # only exists in paho-mqtt 2.x
+except ImportError:
+    sys.exit('This tool needs paho-mqtt 2.x. Install it with:  python -m pip install "paho-mqtt>=2.0"')
 
 from bambu_discovery import load_cache, resolve, save_cache
 
@@ -188,6 +192,7 @@ class BambuLink:
         self.status = {}
         self.connected = False
         self.auth_failed = False
+        self.disconnected_at = None
         self.last_report = 0.0
         # A-series firmware silently ignores commands with a stale sequence_id; start from a timestamp
         self._seq = int(time.time())
@@ -196,7 +201,7 @@ class BambuLink:
         self._ack_expect = {}   # seq -> command name we are waiting on
         self._acks = {}         # seq -> (result, reason)
 
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
+        c = mqtt.Client(CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         c.username_pw_set("bblp", code)
         # the printer's certificate is signed by Bambu's private CA; skip verification on the LAN
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -228,6 +233,7 @@ class BambuLink:
         if rc == 0:
             self.connected = True
             self.auth_failed = False
+            self.disconnected_at = None
             c.subscribe(f"device/{self.serial}/report")
             c.publish(
                 f"device/{self.serial}/request",
@@ -240,22 +246,26 @@ class BambuLink:
 
     def _on_disconnect(self, c, userdata, flags, rc, props=None):
         self.connected = False
+        self.disconnected_at = time.time()
 
     def _on_message(self, c, userdata, msg):
         try:
             data = json.loads(msg.payload)
-        except json.JSONDecodeError:
-            return
-        p = data.get("print", {})
-        seq = str(p.get("sequence_id", ""))
-        # count it as our ack only if the command matches what we sent (status pushes carry sequence_id too)
-        if seq in self._ack_events and p.get("command") == self._ack_expect.get(seq):
-            self._acks[seq] = (str(p.get("result", "?")), p.get("reason") or "")
-            self._ack_events[seq].set()
-        for k in STATUS_KEYS:
-            if k in p:
-                self.status[k] = p[k]
-        self.last_report = time.time()
+            p = data.get("print", {}) if isinstance(data, dict) else {}
+            if not isinstance(p, dict):
+                return
+            seq = str(p.get("sequence_id", ""))
+            # count it as our ack only if the command matches what we sent (status pushes carry sequence_id too)
+            ev = self._ack_events.get(seq)
+            if ev is not None and p.get("command") == self._ack_expect.get(seq):
+                self._acks[seq] = (str(p.get("result", "?")), p.get("reason") or "")
+                ev.set()
+            for k in STATUS_KEYS:
+                if k in p:
+                    self.status[k] = p[k]
+            self.last_report = time.time()
+        except Exception as e:  # a bad report must never take the MQTT thread down
+            print(f"[MQTT] ignoring malformed report: {type(e).__name__}: {e}", file=sys.stderr)
 
     def send_command(self, print_payload, timeout=5.0):
         """Publish one print command and wait for the printer's acknowledgement."""
@@ -317,12 +327,13 @@ class JobRunner:
         self.current = 0
         self.state = "idle"   # idle | running | paused | done | stopped | error
         self.error = ""
+        self.note = ""
         self._stop = threading.Event()
         self._pause = threading.Event()
 
     def snapshot(self):
         return {"state": self.state, "current": self.current, "total": self.total,
-                "filename": self.filename, "error": self.error}
+                "filename": self.filename, "error": self.error, "note": self.note}
 
     def start(self, filename, text):
         if self.state in ("running", "paused"):
@@ -337,6 +348,7 @@ class JobRunner:
         self.filename = filename
         self.current = 0
         self.error = ""
+        self.note = ""
         self._stop.clear()
         self._pause.clear()
         self.state = "running"
@@ -349,6 +361,7 @@ class JobRunner:
                 time.sleep(0.1)
             if self._stop.is_set():
                 self.state = "stopped"
+                self._heaters_off()
                 return
             self.current = i
             cmd = line.split(";", 1)[0].strip()
@@ -362,9 +375,20 @@ class JobRunner:
             if r["result"] != "success":
                 self.state = "error"
                 self.error = f"line {i + 1} ({cmd}): {r['result']} {r.get('reason', '')}".strip()
+                self._heaters_off()
                 return
         self.current = self.total
         self.state = "done"
+
+    def _heaters_off(self):
+        """A stopped or failed stream must not leave a hot nozzle sitting on the part."""
+        link = self.app.link
+        if link and link.connected:
+            try:
+                link.send_gcode("M104 S0\nM140 S0\nM106 P1 S0")
+                self.note = "heaters turned off"
+            except Exception:
+                self.note = ""
 
     def pause(self):
         if self.state == "running":
@@ -393,39 +417,40 @@ class App:
         self.phase = "disconnected"
         self.error = ""
         self.job = JobRunner(self)
+        self._pending_code = ""
         self._busy = threading.Lock()
 
-    def start_connect(self, code=None, ip=None):
-        upd = {}
-        if code:
-            upd["code"] = code
-        if ip:
-            upd["ip"] = ip
+    def start_connect(self, code=None, ip=None, serial=None):
+        upd = {k: v for k, v in (("ip", ip), ("serial", serial)) if v}
         if upd:
             save_cache(upd)
-        if not load_cache().get("code"):
+        code = code or load_cache().get("code", "")
+        if not code:
             self.phase = "error"
             self.error = "Access code required (the 8 characters on the printer's LAN-only Mode screen)"
             return
         if not self._busy.acquire(blocking=False):
             return  # already connecting
+        self._pending_code = code
         self.phase, self.error = "connecting", ""
         threading.Thread(target=self._connect, daemon=True).start()
 
     def _connect(self):
         try:
             cfg = load_cache()
-            found = resolve(cfg.get("ip"), cfg.get("serial"))
+            code = self._pending_code
+            found = resolve(cfg.get("ip"), cfg.get("serial"), code)
             if not found:
                 self.phase = "error"
                 self.error = ("Printer not found. Check it is on and on the same network; "
                               "if broadcasts are filtered (campus Wi-Fi), read the IP from "
-                              "the printer's Settings → Network screen and enter it below.")
+                              "the printer's Settings > Network screen and enter it below "
+                              "(plus the serial number from Settings > Device if it still fails).")
                 return
             if self.link:
                 self.link.stop()
                 self.link = None
-            link = BambuLink(found["ip"], found["serial"], load_cache().get("code", ""))
+            link = BambuLink(found["ip"], found["serial"], code)
             try:
                 link.start()
             except OSError as e:
@@ -438,12 +463,17 @@ class App:
             if link.connected:
                 self.link = link
                 self.phase, self.error = "connected", ""
+                save_cache({"code": code})  # remembered only once it is known to work
                 print(f"Connected to printer {found.get('name', '?')} @ {found['ip']}")
             else:
                 link.stop()
                 self.phase = "error"
                 self.error = ("Connection refused or timed out. Is the access code right? "
                               "Are LAN-only Mode and Developer Mode both enabled?")
+        except Exception as e:  # never leave the page stuck on "connecting"
+            self.phase = "error"
+            self.error = f"Internal error while connecting: {type(e).__name__}: {e}"
+            print(f"[connect] {type(e).__name__}: {e}", file=sys.stderr)
         finally:
             self._busy.release()
 
@@ -452,6 +482,23 @@ def make_handler(app: App, html_path: Path):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             pass  # keep the terminal quiet during class
+
+        def _is_loopback_client(self):
+            return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+        def _same_site(self):
+            """Only loopback names / IP literals may address this server, and a browser
+            Origin (sent on cross-site requests) must match the Host it was served from."""
+            host = (self.headers.get("Host") or "").strip()
+            m = re.match(r"^(\[[^\]]*\]|[^:]+)", host)
+            hostname = m.group(1) if m else ""
+            host_ok = (hostname in ("localhost", "127.0.0.1", "[::1]")
+                       or re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", hostname) is not None
+                       or hostname.startswith("["))
+            origin = self.headers.get("Origin")
+            if origin and origin.split("//", 1)[-1].rstrip("/") != host:
+                return False
+            return host_ok
 
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -462,6 +509,9 @@ def make_handler(app: App, html_path: Path):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path.startswith("/api/") and not self._same_site():
+                self._json({"error": "forbidden"}, 403)
+                return
             if self.path in ("/", "/index.html"):
                 try:
                     body = html_path.read_bytes()
@@ -484,24 +534,41 @@ def make_handler(app: App, html_path: Path):
                 cfg = load_cache()
                 link = app.link
                 stale = (link is None) or (time.time() - link.last_report > 10)
+                if (app.phase == "connected" and link and not link.connected
+                        and link.disconnected_at and time.time() - link.disconnected_at > 15):
+                    app.phase = "error"
+                    app.error = "Lost contact with the printer - check its power and Wi-Fi, then press Connect"
                 self._json({
                     "phase": app.phase,
                     "error": app.error,
                     "connected": bool(link and link.connected and not stale),
                     "ip": cfg.get("ip", ""),
                     "serial": cfg.get("serial", ""),
-                    "code": cfg.get("code", ""),
+                    # pre-fill the access code only for the browser on this machine:
+                    # with --host 0.0.0.0 every client on the LAN polls this endpoint
+                    "code": cfg.get("code", "") if self._is_loopback_client() else "",
                     "status": link.status if link else {},
                     "job": app.job.snapshot(),
                 })
             else:
                 self.send_error(404)
 
-        def _body(self):
+        def _body(self, max_len=150_000_000):
             length = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(length)) if length else {}
+            if length > max_len:
+                raise ValueError("request body too large")
+            data = json.loads(self.rfile.read(length)) if length else {}
+            if not isinstance(data, dict):
+                raise ValueError("JSON object expected")
+            return data
 
         def do_POST(self):
+            if not self._same_site():
+                self._json({"error": "forbidden"}, 403)
+                return
+            if not self.headers.get("Content-Type", "").startswith("application/json"):
+                self._json({"error": "JSON body expected"}, 415)
+                return
             if self.path == "/api/connect":
                 try:
                     data = self._body()
@@ -509,7 +576,8 @@ def make_handler(app: App, html_path: Path):
                     self._json({"error": "bad request"}, 400)
                     return
                 app.start_connect(code=str(data.get("code", "")).strip(),
-                                  ip=str(data.get("ip", "")).strip())
+                                  ip=str(data.get("ip", "")).strip(),
+                                  serial=str(data.get("serial", "")).strip())
                 self._json({"phase": app.phase, "error": app.error})
             elif self.path == "/api/gcode":
                 try:
@@ -560,8 +628,8 @@ def make_handler(app: App, html_path: Path):
                 if not raw:
                     self._json({"ok": False, "error": "file is empty"})
                     return
-                if len(raw) > 200_000_000:
-                    self._json({"ok": False, "error": "file too large (200 MB max)"})
+                if len(raw) > 100_000_000:
+                    self._json({"ok": False, "error": "file too large (100 MB max)"})
                     return
                 cfg = load_cache()
                 name = safe_sd_name(filename)
@@ -586,12 +654,15 @@ def make_handler(app: App, html_path: Path):
                 if not raw:
                     self._json({"ok": False, "error": "file is empty"})
                     return
+                if len(raw) > 100_000_000:
+                    self._json({"ok": False, "error": "file too large (100 MB max)"})
+                    return
                 name = safe_sd_name(filename)
                 if name.lower().endswith(".3mf"):
                     payload = raw
                 else:
                     try:
-                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8", "replace"))
+                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8-sig", "replace"))
                     except Exception as e:
                         self._json({"ok": False, "error": f"could not wrap gcode: {e}"})
                         return
@@ -625,7 +696,7 @@ def make_handler(app: App, html_path: Path):
                     # raw gcode cannot be started remotely: fetch -> wrap in the skeleton -> upload as .gcode.3mf -> start
                     try:
                         raw = sd_download(cfg.get("ip", ""), cfg.get("code", ""), name)
-                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8", "replace"))
+                        payload = wrap_gcode_in_skeleton(raw.decode("utf-8-sig", "replace"))
                         name = wrapped_3mf_name(name)
                         sd_upload(cfg.get("ip", ""), cfg.get("code", ""), name, payload)
                         md5 = hashlib.md5(payload).hexdigest().upper()
@@ -684,6 +755,8 @@ def main():
 
     app = App(args.ip, args.serial, args.code)
     html_path = Path(__file__).resolve().parent / "web_ui.html"
+    if sys.platform == "win32":
+        ThreadingHTTPServer.allow_reuse_address = False  # so a second launch hits the OSError below
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(app, html_path))
     except OSError as e:
@@ -706,4 +779,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
